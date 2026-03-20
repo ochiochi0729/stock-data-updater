@@ -159,12 +159,14 @@ if __name__ == "__main__":
     try:
         # ★ 過去検証（TARGET_DATE）に対応する賢いSQLの組み立て
         if TARGET_DATE:
-            # 基準日が指定されている場合、その日から遡って200日分だけを取得
             target_dt = pd.to_datetime(TARGET_DATE)
             start_date_str = (target_dt - pd.Timedelta(days=200)).strftime('%Y-%m-%d')
+            # ★ 追加：答え合わせ用に「未来45日分」も余分に取得する
+            end_date_str = (target_dt + pd.Timedelta(days=45)).strftime('%Y-%m-%d')
+            
             query = f"""
                 SELECT * FROM `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}`
-                WHERE Date >= '{start_date_str}' AND Date <= '{TARGET_DATE}'
+                WHERE Date >= '{start_date_str}' AND Date <= '{end_date_str}'
             """
         else:
             # 毎日の自動実行（最新）の場合、今日から遡って200日分を取得
