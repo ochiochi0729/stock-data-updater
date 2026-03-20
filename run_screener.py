@@ -157,7 +157,11 @@ if __name__ == "__main__":
 
     print("BigQueryから最新の株価データを一括ダウンロード中...（魔法の鏡を読み込みます）")
     try:
-        query = f"SELECT * FROM `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}`"
+        # ★ 爆速化：全データではなく「直近200日分（約半年分）」だけを絞り込んで取得する
+        query = f"""
+            SELECT * FROM `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}`
+            WHERE Date >= DATE_SUB(CURRENT_DATE('Asia/Tokyo'), INTERVAL 200 DAY)
+        """
         df_all = pandas_gbq.read_gbq(query, project_id=PROJECT_ID, credentials=get_credentials())
         df_all['Date'] = pd.to_datetime(df_all['Date'])
         # 銘柄ごとに分割して辞書化（爆速処理のため）
