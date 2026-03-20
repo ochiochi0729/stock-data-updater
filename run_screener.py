@@ -12,7 +12,7 @@ VIEW_ID = 'clean_daily_prices'
 CSV_LIST_PATH = 'tickers_list.csv'
 
 # ★ 毎日最新データで実行するため None に設定
-TARGET_DATE = None
+TARGET_DATE = '2025-6-3'
 
 EVAL_DAYS = [3, 6, 7, 10, 13, 16, 19, 22, 25, 28]
 STOP_LOSS_THRESHOLD = -0.05
