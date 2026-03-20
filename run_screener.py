@@ -8,13 +8,13 @@ from google.oauth2 import service_account
 # ==========================================
 # 設定部分
 # ==========================================
-PROJECT_ID = 'stock-data-updater-490714'  # ★変更必須
+PROJECT_ID = 'stock-data-updater-490714'  # ★設定済み
 DATASET_ID = 'stock_db'
 VIEW_ID = 'clean_daily_prices'
 CSV_LIST_PATH = 'tickers_list.csv'
 
 # ★ 毎日の自動実行用は None（過去検証時は '2025-06-03' などを指定）
-TARGET_DATE = None
+TARGET_DATE = '2025-6-3'
 
 EVAL_DAYS = [3, 6, 7, 10, 13, 16, 19, 22, 25, 28]
 STOP_LOSS_THRESHOLD = -0.05
@@ -45,15 +45,22 @@ sys.stdout = Logger("report.txt")
 class IndicatorCalculator:
     @staticmethod
     def add_indicators(df):
-        # PO用
+        # PO（パーフェクトオーダー）用
         df['MA25'] = df['Close'].rolling(window=25).mean()
         df['MA75'] = df['Close'].rolling(window=75).mean()
         df['MA25_5d_ago'] = df['MA25'].shift(5)
         df['MA75_5d_ago'] = df['MA75'].shift(5)
         df['Avg_Range'] = (df['High'] - df['Low']).rolling(window=20).mean()
-        # CwH用
+        
+        # CwH（カップ・ウィズ・ハンドル）用
         df['MA200'] = df['Close'].rolling(window=200).mean()
         df['MA200_20d_ago'] = df['MA200'].shift(20)
+        
+        # Breakout（ブレイクアウト）用追加
+        df['MA25_3d_ago'] = df['MA25'].shift(3)
+        df['MA75_10d_ago'] = df['MA75'].shift(10)
+        df['Close_1d_ago'] = df['Close'].shift(1)
+        
         # 共通
         df['Vol_1M'] = df['Volume'].rolling(window=20).mean()
         df['Vol_1M_min'] = df['Volume'].rolling(window=20).min()
@@ -202,6 +209,78 @@ class CupWithHandleScreener:
         return True
 
 # ==========================================
+# 検査C：ブレイクアウト判定（NEW!!）
+# ==========================================
+class BreakoutScreener:
+    drop_reasons = {
+        "1_データ不足": 0,
+        "2_基本流動性不足": 0,
+        "3a_75日線が過去に下降トレンドではない(上昇中など)": 0,
+        "3b_75日線の直近の下降が落ち着いていない(±1.5%の範囲外)": 0, 
+        "3c_25日線と75日線が離れすぎている(底練り未完了)": 0,
+        "4_25日線が下向き": 0,
+        "5_直近で下から上抜けしていない": 0,
+        "6_価格が25日線の範囲外(-1%〜+5%)": 0, 
+        "7_直近5日間の上昇＆出来高急増なし": 0, 
+        "8_価格が75日線の下にある(上値抵抗線のダマシ回避)": 0
+    }
+    @classmethod
+    def reset_reasons(cls):
+        for key in cls.drop_reasons: cls.drop_reasons[key] = 0
+    @classmethod
+    def check_conditions(cls, df):
+        if len(df) < 80:
+            cls.drop_reasons["1_データ不足"] += 1
+            return False
+        latest = df.iloc[-1]
+        if latest['Vol_1M_min'] < 100000:
+            cls.drop_reasons["2_基本流動性不足"] += 1
+            return False
+        ma75_40d_ago = df['MA75'].iloc[-40]
+        ma75_10d_ago = latest['MA75_10d_ago']
+        if ma75_40d_ago <= ma75_10d_ago:
+            cls.drop_reasons["3a_75日線が過去に下降トレンドではない(上昇中など)"] += 1
+            return False
+        ma75_recent_change = (latest['MA75'] / ma75_10d_ago) - 1
+        if not (-0.015 <= ma75_recent_change <= 0.015):
+            cls.drop_reasons["3b_75日線の直近の下降が落ち着いていない(±1.5%の範囲外)"] += 1
+            return False
+        ma_distance = abs(latest['MA25'] - latest['MA75']) / latest['MA75']
+        if ma_distance > 0.05:
+            cls.drop_reasons["3c_25日線と75日線が離れすぎている(底練り未完了)"] += 1
+            return False
+        ma25_change_rate = (latest['MA25'] / latest['MA25_3d_ago']) - 1
+        if ma25_change_rate < -0.001:
+            cls.drop_reasons["4_25日線が下向き"] += 1
+            return False
+        was_below_ma25 = (df['Close'].iloc[-6:-1] < df['MA25'].iloc[-6:-1]).any()
+        if not was_below_ma25:
+            cls.drop_reasons["5_直近で下から上抜けしていない"] += 1
+            return False
+        price_to_ma25 = latest['Close'] / latest['MA25']
+        if not (0.99 <= price_to_ma25 <= 1.05):
+            cls.drop_reasons["6_価格が25日線の範囲外(-1%〜+5%)"] += 1
+            return False
+        has_volume_breakout = False
+        for i in range(1, 6):
+            idx = -i
+            vol = df['Volume'].iloc[idx]
+            vol_ma = df['Vol_1M'].iloc[idx]
+            close_price = df['Close'].iloc[idx]
+            open_price = df['Open'].iloc[idx]
+            prev_close = df['Close_1d_ago'].iloc[idx]
+            if (vol >= vol_ma * 1.5) and ((close_price > open_price) or (close_price > prev_close)):
+                has_volume_breakout = True
+                break
+        if not has_volume_breakout:
+            cls.drop_reasons["7_直近5日間の上昇＆出来高急増なし"] += 1
+            return False
+        if latest['Close'] <= latest['MA75']:
+            cls.drop_reasons["8_価格が75日線の下にある(上値抵抗線のダマシ回避)"] += 1
+            return False
+        return True
+
+# ==========================================
 # メイン処理・実行ヘルパー
 # ==========================================
 def get_credentials():
@@ -316,7 +395,7 @@ if __name__ == "__main__":
 
     print("BigQueryから必要な株価データを一括ダウンロード中...（魔法の鏡を読み込みます）")
     try:
-        # ★ CwHのために600日（約2年強）分を遡ってダウンロード
+        # CwHのために600日（約2年強）分を遡ってダウンロード（Breakoutもこれで十分カバー可能）
         if TARGET_DATE:
             target_dt = pd.to_datetime(TARGET_DATE)
             start_date_str = (target_dt - pd.Timedelta(days=600)).strftime('%Y-%m-%d')
@@ -328,7 +407,7 @@ if __name__ == "__main__":
         df_all = pandas_gbq.read_gbq(query, project_id=PROJECT_ID, credentials=get_credentials())
         df_all['Date'] = pd.to_datetime(df_all['Date'])
         
-        # ダウンロード直後に全銘柄の指標を一括計算しておく（爆速化の要）
+        # ダウンロード直後に全銘柄の指標を一括計算しておく
         dict_dfs = {}
         for ticker, group in df_all.groupby('Ticker'):
             df = group.set_index('Date').sort_index()
@@ -350,11 +429,13 @@ if __name__ == "__main__":
         actual_eval_date = sample_df.index[-1]
 
     # --- 検査A（パーフェクトオーダー）を実行 ---
-    run_screening_loop(PerfectOrderScreener, "パーフェクトオーダー押し目買い", target_tickers, dict_dfs, actual_eval_date)
+    run_screening_loop(PerfectOrderScreener, "①パーフェクトオーダー押し目買い", target_tickers, dict_dfs, actual_eval_date)
 
     # --- 検査B（カップ・ウィズ・ハンドル）を実行 ---
-    # メモリ上の全く同じデータ（dict_dfs）を再利用するため、一瞬で終わります
-    run_screening_loop(CupWithHandleScreener, "カップ・ウィズ・ハンドル", target_tickers, dict_dfs, actual_eval_date)
+    run_screening_loop(CupWithHandleScreener, "②カップ・ウィズ・ハンドル", target_tickers, dict_dfs, actual_eval_date)
+    
+    # --- 検査C（ブレイクアウト）を実行 ---
+    run_screening_loop(BreakoutScreener, "③底練りからのブレイクアウト", target_tickers, dict_dfs, actual_eval_date)
     
     print("\n" + "="*80)
     print("すべてのスクリーニングが完了しました。")
