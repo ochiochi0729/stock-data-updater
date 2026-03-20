@@ -155,16 +155,26 @@ if __name__ == "__main__":
         print("銘柄リストが見つかりません。")
         exit()
 
-    print("BigQueryから最新の株価データを一括ダウンロード中...（魔法の鏡を読み込みます）")
+    print("BigQueryから必要な株価データを一括ダウンロード中...（魔法の鏡を読み込みます）")
     try:
-        # ★ 爆速化：全データではなく「直近200日分（約半年分）」だけを絞り込んで取得する
-        query = f"""
-            SELECT * FROM `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}`
-            WHERE Date >= DATE_SUB(CURRENT_DATE('Asia/Tokyo'), INTERVAL 200 DAY)
-        """
+        # ★ 過去検証（TARGET_DATE）に対応する賢いSQLの組み立て
+        if TARGET_DATE:
+            # 基準日が指定されている場合、その日から遡って200日分だけを取得
+            target_dt = pd.to_datetime(TARGET_DATE)
+            start_date_str = (target_dt - pd.Timedelta(days=200)).strftime('%Y-%m-%d')
+            query = f"""
+                SELECT * FROM `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}`
+                WHERE Date >= '{start_date_str}' AND Date <= '{TARGET_DATE}'
+            """
+        else:
+            # 毎日の自動実行（最新）の場合、今日から遡って200日分を取得
+            query = f"""
+                SELECT * FROM `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}`
+                WHERE Date >= DATE_SUB(CURRENT_DATE('Asia/Tokyo'), INTERVAL 200 DAY)
+            """
+            
         df_all = pandas_gbq.read_gbq(query, project_id=PROJECT_ID, credentials=get_credentials())
         df_all['Date'] = pd.to_datetime(df_all['Date'])
-        # 銘柄ごとに分割して辞書化（爆速処理のため）
         dict_dfs = {ticker: group.set_index('Date').sort_index() for ticker, group in df_all.groupby('Ticker')}
     except Exception as e:
         print(f"BigQueryの読み込みエラー: {e}")
