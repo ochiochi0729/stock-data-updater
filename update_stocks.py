@@ -9,7 +9,7 @@ import concurrent.futures
 # ==========================================
 # 設定部分
 # ==========================================
-PROJECT_ID = 'ここにあなたのプロジェクトIDを貼り付けます'  # ★変更必須
+PROJECT_ID = 'stock-data-updater-490714'  # ★変更必須
 DATASET_ID = 'stock_db'
 TABLE_ID = 'daily_prices'
 CSV_LIST_PATH = 'tickers_list.csv'
