@@ -21,7 +21,7 @@ jobs:
 
       - name: 必要なライブラリをインストール
         run: |
-          pip install pandas yfinance google-api-python-client google-auth-oauthlib google-auth-httplib2
+          pip install pandas yfinance pandas-gbq db-dtypes google-auth
 
       - name: 株価取得プログラムを実行
         env:
