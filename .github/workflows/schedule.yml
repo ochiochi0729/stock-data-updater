@@ -25,6 +25,5 @@ jobs:
 
       - name: 株価取得プログラムを実行
         env:
-          # フェーズ3で登録した合鍵をプログラムに渡す
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
-        run: python update_stocks.py
+        run: python -u update_stocks.py  # ★ -u を追加するだけです！
