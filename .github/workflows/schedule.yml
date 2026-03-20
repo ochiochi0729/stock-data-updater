@@ -1,48 +1,62 @@
-name: Daily Stock Data Update
+name: Daily Stock Data Update & Screening
 
 on:
   schedule:
-    # 毎日 UTCの午前9時（日本時間の夕方18時）に実行する設定
     - cron: '0 9 * * *'
-  # 手動で実行ボタンを押せるようにする設定
   workflow_dispatch:
 
 jobs:
   run-update:
     runs-on: ubuntu-latest
+
     steps:
-      - name: コードを取得
+      - name: リポジトリのコードを取得
         uses: actions/checkout@v3
 
       - name: Pythonをセットアップ
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: 必要なライブラリをインストール
         run: |
+          python -m pip install --upgrade pip
           pip install pandas yfinance pandas-gbq db-dtypes google-auth
 
-      - name: 株価取得プログラムを実行
+      - name: ① 株価取得プログラムを実行（BigQueryへ保存）
         env:
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
-        run: python -u update_stocks.py  # ★ -u を追加するだけです！
+        run: python -u update_stocks.py
 
-      # ▼▼▼ここから下を一番最後に追記します▼▼▼
-      - name: 完了通知をGmailに送信
+      - name: ② スクリーニングプログラムを実行
+        env:
+          GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+        run: python -u run_screener.py
+
+      - name: ③ レポート（テキスト）をメールの本文に読み込む
+        if: always()
+        run: |
+          echo "REPORT_CONTENT<<EOF" >> $GITHUB_ENV
+          if [ -f report.txt ]; then
+            cat report.txt >> $GITHUB_ENV
+          else
+            echo "エラーが発生したか、合致する銘柄がありませんでした。" >> $GITHUB_ENV
+          fi
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: ④ 抽出結果をGmailに送信
         uses: dawidd6/action-send-mail@v3
-        if: always()  # 成功してもエラーが起きても必ず実行する魔法の言葉
+        if: always()
         with:
           server_address: smtp.gmail.com
           server_port: 465
           username: ${{ secrets.GMAIL_USERNAME }}
           password: ${{ secrets.GMAIL_PASSWORD }}
-          subject: 【自動化】株価データの更新完了 (${{ job.status }})
+          subject: 【本日の抽出結果】パーフェクトオーダー押し目買い (${{ job.status }})
           body: |
-            GitHub Actionsでの株価データ取得・BigQuery更新プログラムが完了しました。
-            
-            実行結果: ${{ job.status }}
-            
-            ※ログの詳細はGitHubリポジトリのActionsタブから確認してください。
+            本日の株価データ更新およびスクリーニングが完了しました。
+
+            ▼ スクリーニング結果 ▼
+            ${{ env.REPORT_CONTENT }}
           to: ochiochi0729@gmail.com
           from: GitHub Actions Bot
