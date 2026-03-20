@@ -1,6 +1,7 @@
 import os
 import json
 import io
+import time
 import yfinance as yf
 import pandas as pd
 from google.oauth2 import service_account
@@ -16,7 +17,6 @@ TARGET_FOLDER_ID = '14UB8Owq0EpblGdY7P3CprB4AesnCqUc8'
 CSV_LIST_PATH = 'tickers_list.csv' 
 # ==========================================
 
-# マルチスレッド（並列処理）時にAPIの混線を防ぐための専用ボックス
 thread_local = threading.local()
 
 def get_drive_service():
@@ -67,97 +67,85 @@ def get_existing_files(service, folder_id):
             break
     return existing_files
 
-def process_single_ticker(ticker, df_new, existing_files):
-    """1銘柄分の差分更新とアップロードを行う（並列処理で呼ばれる関数）"""
+def process_single_ticker(ticker, existing_files):
+    """1銘柄ごとに取得と更新を完結させる（並列処理用）"""
     try:
-        service = get_drive_service()
         file_name = f"{ticker}.csv"
+        
+        # ★ 修正1: ロボットの容量エラーを防ぐため、新規作成はせずスキップする
+        if file_name not in existing_files:
+            return True, f"{ticker}: 既存CSVなし(スキップ)"
 
-        # 1. 既存データの読み込みと結合（差分更新）
-        if file_name in existing_files:
-            file_id = existing_files[file_name]
-            # ドライブから既存のCSVをメモリ上に直接ダウンロード
-            content = service.files().get_media(fileId=file_id).execute()
-            df_local = pd.read_csv(io.BytesIO(content), index_col=0, parse_dates=True)
-            
-            # 新しい5日分のデータと結合し、重複を排除（新しいデータで上書き）
-            df_combined = pd.concat([df_local, df_new])
-            df_combined = df_combined[~df_combined.index.duplicated(keep='last')]
-            df_combined.sort_index(inplace=True)
-        else:
-            df_combined = df_new.copy()
+        # ★ 修正2: Yahooのパンクを防ぐため、1銘柄ずつ個別に5日分を取得
+        df_new = yf.download(ticker, period="5d", progress=False)
+        
+        if df_new.empty:
+            return True, f"{ticker}: データなし(スキップ)"
 
-        # 2. 魔法の2行（空欄行を出さないための整形）
+        # マルチインデックスの解除
+        if isinstance(df_new.columns, pd.MultiIndex):
+            df_new.columns = df_new.columns.get_level_values(0)
+
+        service = get_drive_service()
+        file_id = existing_files[file_name]
+
+        # 既存データのダウンロードと結合
+        content = service.files().get_media(fileId=file_id).execute()
+        df_local = pd.read_csv(io.BytesIO(content), index_col=0, parse_dates=True)
+        
+        df_combined = pd.concat([df_local, df_new])
+        df_combined = df_combined[~df_combined.index.duplicated(keep='last')]
+        df_combined.sort_index(inplace=True)
+
+        # 魔法の2行（空欄行を出さないための整形）
         df_combined.index.name = 'Date'
         df_combined.columns.name = None
 
-        # 3. CSVをメモリ上で作成
+        # メモリ上でCSV化
         csv_buffer = io.StringIO()
         df_combined.to_csv(csv_buffer)
         media = MediaIoBaseUpload(io.BytesIO(csv_buffer.getvalue().encode('utf-8')), mimetype='text/csv', resumable=True)
 
-        # 4. Googleドライブへ送信
-        if file_name in existing_files:
-            service.files().update(fileId=file_id, media_body=media).execute()
-        else:
-            file_metadata = {'name': file_name, 'parents': [TARGET_FOLDER_ID]}
-            service.files().create(body=file_metadata, media_body=media).execute()
+        # ★ 既存ファイルの上書き更新のみ実行（ユーザーの容量を使うのでエラーにならない）
+        service.files().update(fileId=file_id, media_body=media).execute()
 
-        return True, ticker
+        return True, f"{ticker}: 更新完了"
     except Exception as e:
-        return False, f"{ticker}: {e}"
+        return False, f"{ticker} のエラー: {e}"
 
 if __name__ == "__main__":
-    print("【日次特化・爆速版】株価データの自動取得を開始します...")
+    print("【日次特化・完全安定版】株価データの自動取得を開始します...")
     
     target_tickers = load_tickers_from_csv(CSV_LIST_PATH)
     if not target_tickers:
         print(f"エラー: {CSV_LIST_PATH} が見つかりません。")
         exit()
 
-    # メインスレッド用のサービスでファイル一覧を取得
     main_service = get_drive_service()
     print("Googleドライブの既存ファイルリストを取得中...")
     existing_files = get_existing_files(main_service, TARGET_FOLDER_ID)
 
-    # ★ 取得期間を「過去5日分」に特化
-    print(f"Yahoo Financeから {len(target_tickers)} 銘柄の直近データ(5日分)を一括取得します...")
-    tickers_str = " ".join(target_tickers)
-    new_data = yf.download(tickers_str, period="5d", group_by='ticker', progress=False)
-
-    print("データをマージしてGoogleドライブへ並列アップロード中...")
+    print(f"全 {len(target_tickers)} 銘柄の取得＆更新を開始します（5スレッド並列処理）...")
     
-    # 並列処理に渡すタスクの準備
-    tasks = []
-    for ticker in target_tickers:
-        if len(target_tickers) == 1:
-            df_new = new_data.dropna(how='all')
-        elif ticker in new_data:
-            df_new = new_data[ticker].dropna(how='all')
-        else:
-            continue
-            
-        if df_new.empty:
-            continue
-            
-        if isinstance(df_new.columns, pd.MultiIndex):
-            df_new.columns = df_new.columns.get_level_values(0)
-            
-        tasks.append((ticker, df_new))
-
     update_count = 0
+    skip_count = 0
     
-    # ★ 5スレッドで並列処理を実行（一気に高速化！）
+    # 5人で手分けして1銘柄ずつ処理していく
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(process_single_ticker, t[0], t[1], existing_files) for t in tasks]
+        futures = [executor.submit(process_single_ticker, ticker, existing_files) for ticker in target_tickers]
         
         for future in concurrent.futures.as_completed(futures):
             success, result_msg = future.result()
             if success:
-                update_count += 1
-                if update_count % 100 == 0:
-                    print(f" ... {update_count} 銘柄完了")
+                if "更新完了" in result_msg:
+                    update_count += 1
+                else:
+                    skip_count += 1
+                    
+                total_processed = update_count + skip_count
+                if total_processed % 100 == 0:
+                    print(f" ... {total_processed} / {len(target_tickers)} 銘柄完了 (更新: {update_count}, スキップ: {skip_count})")
             else:
-                print(f" -> エラー発生: {result_msg}")
+                print(f" -> {result_msg}")
 
-    print(f"日次更新が完了しました！ ({update_count} 銘柄)")
+    print(f"\nすべての処理が完了しました！ [更新成功: {update_count} 銘柄, スキップ: {skip_count} 銘柄]")
