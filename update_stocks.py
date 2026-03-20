@@ -10,7 +10,7 @@ from googleapiclient.http import MediaIoBaseUpload
 # ==========================================
 # 設定部分
 # ==========================================
-TARGET_FOLDER_ID = 'ここにあなたのフォルダIDを貼り付けます'
+TARGET_FOLDER_ID = '14UB8Owq0EpblGdY7P3CprB4AesnCqUc8'
 
 # GitHubリポジトリ内に置く銘柄リストのファイル名
 CSV_LIST_PATH = 'tickers_list.csv' 
