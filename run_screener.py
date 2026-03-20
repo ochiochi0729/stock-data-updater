@@ -5,22 +5,27 @@ import pandas as pd
 import pandas_gbq
 from google.oauth2 import service_account
 
-# --- 設定部分 ---
-PROJECT_ID = 'stock-data-updater-490714'  # ★変更必須
+# ==========================================
+# 設定部分
+# ==========================================
+PROJECT_ID = 'ここにあなたのプロジェクトIDを貼り付けます'  # ★変更必須
 DATASET_ID = 'stock_db'
 VIEW_ID = 'clean_daily_prices'
 CSV_LIST_PATH = 'tickers_list.csv'
 
-# ★ 毎日最新データで実行するため None に設定
-TARGET_DATE = '2025-6-3'
+# ★ 毎日の自動実行用は None（過去検証時は '2025-06-03' などを指定）
+TARGET_DATE = None
 
 EVAL_DAYS = [3, 6, 7, 10, 13, 16, 19, 22, 25, 28]
 STOP_LOSS_THRESHOLD = -0.05
 BENCHMARK_TICKER = '1306.T'
 
-# ==============================================================
-# 出力結果をメール送信用にテキストファイルに保存する魔法のクラス
-# ==============================================================
+# CwH用設定
+LOOKBACK_DAYS = 375
+
+# ==========================================
+# ログ出力用クラス（メール送信用）
+# ==========================================
 class Logger:
     def __init__(self, filename):
         self.terminal = sys.stdout
@@ -34,24 +39,30 @@ class Logger:
 
 sys.stdout = Logger("report.txt")
 
-# ==============================================================
-# 指標計算・判定ロジック（※一切変更していません）
-# ==============================================================
+# ==========================================
+# 統合：指標計算クラス
+# ==========================================
 class IndicatorCalculator:
-    """指標計算クラス"""
     @staticmethod
     def add_indicators(df):
+        # PO用
         df['MA25'] = df['Close'].rolling(window=25).mean()
         df['MA75'] = df['Close'].rolling(window=75).mean()
         df['MA25_5d_ago'] = df['MA25'].shift(5)
         df['MA75_5d_ago'] = df['MA75'].shift(5)
+        df['Avg_Range'] = (df['High'] - df['Low']).rolling(window=20).mean()
+        # CwH用
+        df['MA200'] = df['Close'].rolling(window=200).mean()
+        df['MA200_20d_ago'] = df['MA200'].shift(20)
+        # 共通
         df['Vol_1M'] = df['Volume'].rolling(window=20).mean()
         df['Vol_1M_min'] = df['Volume'].rolling(window=20).min()
-        df['Avg_Range'] = (df['High'] - df['Low']).rolling(window=20).mean()
         return df
 
-class StockScreener:
-    """パーフェクトオーダー押し目判定クラス"""
+# ==========================================
+# 検査A：パーフェクトオーダー判定
+# ==========================================
+class PerfectOrderScreener:
     drop_reasons = {
         "1_データ不足(100日)": 0,
         "2_基本流動性不足(1ヶ月最低10万株)": 0,
@@ -66,8 +77,7 @@ class StockScreener:
     }
     @classmethod
     def reset_reasons(cls):
-        for key in cls.drop_reasons.keys():
-            cls.drop_reasons[key] = 0
+        for key in cls.drop_reasons: cls.drop_reasons[key] = 0
     @classmethod
     def check_conditions(cls, df):
         if len(df) < 100:
@@ -115,41 +125,190 @@ class StockScreener:
             cls.drop_reasons["9_異常なボラティリティ(決算等のノイズ回避)"] += 1
             return False
         return True
-    @classmethod
-    def print_report(cls):
-        print("\n=== 脱落理由のレポート ===")
-        for reason, count in cls.drop_reasons.items():
-            print(f"{reason}: {count} 銘柄")
 
-# ==============================================================
-# メイン処理（BigQuery一括読み込み対応）
-# ==============================================================
+# ==========================================
+# 検査B：カップ・ウィズ・ハンドル判定
+# ==========================================
+class CupWithHandleScreener:
+    drop_reasons = {
+        f"01_データ不足({LOOKBACK_DAYS}日)": 0,
+        "02_基本流動性不足(1ヶ月最低10万株)": 0,
+        "03_事前の長期上昇トレンドがない(200日線未満または下向き)": 0,
+        "04_最高値が近すぎる(カップの期間不足)": 0,
+        "05_カップの深さが規格外(調整が10%〜45%ではない)": 0,
+        "06_右側の回復が不十分(元の高値付近まで戻っていない)": 0,
+        "07_取っ手(ハンドル)を形成する期間がない": 0,
+        "08_ハンドルの位置が低い(カップの下半分まで落ちている)": 0,
+        "09_取っ手での売り枯れがない(出来高が平均以上)": 0,
+        "10_取っ手のボラティリティが高すぎる(振れ幅10%超)": 0,
+        "11_現在価格が最高値から離れている(-5%〜0%の範囲外)": 0
+    }
+    @classmethod
+    def reset_reasons(cls):
+        for key in cls.drop_reasons: cls.drop_reasons[key] = 0
+    @classmethod
+    def check_conditions(cls, df):
+        if len(df) < LOOKBACK_DAYS:
+            cls.drop_reasons[f"01_データ不足({LOOKBACK_DAYS}日)"] += 1
+            return False
+        latest = df.iloc[-1]
+        if latest['Vol_1M_min'] < 100000:
+            cls.drop_reasons["02_基本流動性不足(1ヶ月最低10万株)"] += 1
+            return False
+        if pd.isna(latest['MA200']) or latest['Close'] < latest['MA200'] or latest['MA200'] <= latest['MA200_20d_ago']:
+            cls.drop_reasons["03_事前の長期上昇トレンドがない(200日線未満または下向き)"] += 1
+            return False
+        df_lookback = df.iloc[-LOOKBACK_DAYS:]
+        high_val = df_lookback['High'].max()
+        high_idx = df_lookback['High'].values.argmax()
+        days_since_high = (LOOKBACK_DAYS - 1) - high_idx
+        if days_since_high < 20:
+            cls.drop_reasons["04_最高値が近すぎる(カップの期間不足)"] += 1
+            return False
+        cup_data = df_lookback.iloc[high_idx:]
+        cup_low = cup_data['Low'].min()
+        cup_depth = (cup_low / high_val) - 1
+        if not (-0.45 <= cup_depth <= -0.10):
+            cls.drop_reasons["05_カップの深さが規格外(調整が10%〜45%ではない)"] += 1
+            return False
+        cup_low_idx = cup_data['Low'].values.argmin()
+        right_side_data = cup_data.iloc[cup_low_idx:]
+        right_edge_high = right_side_data['High'].max()
+        if right_edge_high < high_val * 0.90:
+            cls.drop_reasons["06_右側の回復が不十分(元の高値付近まで戻っていない)"] += 1
+            return False
+        right_edge_idx = right_side_data['High'].values.argmax()
+        handle_data = right_side_data.iloc[right_edge_idx:]
+        if len(handle_data) < 3:
+            cls.drop_reasons["07_取っ手(ハンドル)を形成する期間がない"] += 1
+            return False
+        handle_low = handle_data['Low'].min()
+        cup_midpoint = high_val - (high_val - cup_low) / 2
+        if handle_low < cup_midpoint:
+            cls.drop_reasons["08_ハンドルの位置が低い(カップの下半分まで落ちている)"] += 1
+            return False
+        handle_vol_avg = handle_data['Volume'].mean()
+        if handle_vol_avg >= latest['Vol_1M']:
+            cls.drop_reasons["09_取っ手での売り枯れがない(出来高が平均以上)"] += 1
+            return False
+        handle_drop = (handle_low / right_edge_high) - 1
+        if handle_drop < -0.10:
+            cls.drop_reasons["10_取っ手のボラティリティが高すぎる(振れ幅10%超)"] += 1
+            return False
+        current_vs_high = (latest['Close'] / high_val) - 1
+        if not (-0.05 <= current_vs_high <= 0.00):
+            cls.drop_reasons["11_現在価格が最高値から離れている(-5%〜0%の範囲外)"] += 1
+            return False
+        return True
+
+# ==========================================
+# メイン処理・実行ヘルパー
+# ==========================================
 def get_credentials():
     creds_json = os.environ.get('GCP_CREDENTIALS')
-    if not creds_json:
-        raise ValueError("合鍵が見つかりません。")
-    creds_dict = json.loads(creds_json)
-    return service_account.Credentials.from_service_account_info(creds_dict)
+    if not creds_json: raise ValueError("合鍵が見つかりません。")
+    return service_account.Credentials.from_service_account_info(json.loads(creds_json))
 
 def load_tickers_from_csv(file_path):
-    if not os.path.exists(file_path):
-        return []
+    if not os.path.exists(file_path): return []
     try:
         df = pd.read_csv(file_path)
         raw_codes = df.iloc[:, 0].astype(str)
         return [c.strip().upper() + '.T' if not c.strip().upper().endswith('.T') else c.strip().upper() for c in raw_codes if c.strip()]
-    except:
-        return []
+    except: return []
 
+def run_screening_loop(screener_class, strategy_name, target_tickers, dict_dfs, actual_eval_date):
+    print(f"\n{'='*80}")
+    print(f"▼ スクリーニング実行: {strategy_name}")
+    print(f"{'='*80}")
+    
+    screener_class.reset_reasons()
+    hit_tickers = []
+    aggregate_returns = {d: [] for d in EVAL_DAYS}
+    total_tickers = len(target_tickers)
+
+    for i, ticker in enumerate(target_tickers):
+        if (i + 1) % 500 == 0: print(f" ... スキャン進行度: {i + 1} / {total_tickers} 銘柄完了")
+        if ticker not in dict_dfs: continue
+        
+        df_full = dict_dfs[ticker]
+        df = df_full.copy()
+
+        if TARGET_DATE:
+            try: df = df.loc[:TARGET_DATE].copy()
+            except KeyError: continue
+            
+        if len(df) == 0: continue
+
+        is_hit = screener_class.check_conditions(df)
+        if is_hit:
+            hit_tickers.append(ticker)
+            hit_price = df.iloc[-1]['Close']
+            current_idx = len(df) - 1
+            max_idx = len(df_full) - 1
+
+            entry_price = None
+            entry_str = "データなし(未来)"
+            if current_idx + 1 <= max_idx:
+                entry_price = df_full.iloc[current_idx + 1]['Open']
+                entry_str = f"{entry_price:,.1f}円"
+
+            row_1_strs, row_2_strs = [], []
+            is_stopped_out = False
+
+            for idx, d in enumerate(EVAL_DAYS):
+                target_idx = current_idx + d
+                if is_stopped_out:
+                    perf_str = "損切除外"
+                elif target_idx <= max_idx and entry_price is not None:
+                    future_price = df_full.iloc[target_idx]['Close']
+                    perf = (future_price / entry_price) - 1
+                    if perf <= STOP_LOSS_THRESHOLD:
+                        is_stopped_out = True
+                        perf_str = f"{future_price:,.0f}円({perf:>+5.1%} 損切)"
+                    else:
+                        aggregate_returns[d].append(perf)
+                        perf_str = f"{future_price:,.0f}円({perf:>+5.1%})"
+                else:
+                    perf_str = "-"
+
+                display_str = f"{d:>2}日後: {perf_str}"
+                if idx < 5: row_1_strs.append(display_str)
+                else: row_2_strs.append(display_str)
+
+            print(f"\n★ 抽出: {ticker:<6s} | 基準日終値: {hit_price:,.1f}円 -> 翌日始値: {entry_str}")
+            print(f"   ├ " + " | ".join(row_1_strs))
+            print(f"   └ " + " | ".join(row_2_strs))
+            print("-" * 80)
+
+    print(f"\n{strategy_name} 抽出完了: {len(hit_tickers)}銘柄")
+    if hit_tickers:
+        print(f"合致銘柄: {', '.join(hit_tickers)}")
+        
+        print(f"\n [抽出銘柄 平均]")
+        avg_1_strs, avg_2_strs = [], []
+        for idx, d in enumerate(EVAL_DAYS):
+            if aggregate_returns[d]:
+                avg_perf = sum(aggregate_returns[d]) / len(aggregate_returns[d])
+                avg_str = f"{d:>2}d: {avg_perf:>+5.1%} ({len(aggregate_returns[d])}銘柄)"
+            else:
+                avg_str = f"{d:>2}d: データなし"
+            if idx < 5: avg_1_strs.append(avg_str)
+            else: avg_2_strs.append(avg_str)
+        print(f" ├ " + " | ".join(avg_1_strs))
+        print(f" └ " + " | ".join(avg_2_strs))
+
+    print("\n[脱落理由のレポート]")
+    for reason, count in sorted(screener_class.drop_reasons.items()):
+        print(f"{reason}: {count} 銘柄")
+
+
+# ==========================================
+# メイン実行ブロック
+# ==========================================
 if __name__ == "__main__":
     target_tickers = load_tickers_from_csv(CSV_LIST_PATH)
-    hit_tickers = []
-    StockScreener.reset_reasons()
-    aggregate_returns = {d: [] for d in EVAL_DAYS}
-    actual_eval_date = None
-
-    if BENCHMARK_TICKER in target_tickers:
-        target_tickers.remove(BENCHMARK_TICKER)
+    if BENCHMARK_TICKER in target_tickers: target_tickers.remove(BENCHMARK_TICKER)
 
     if not target_tickers:
         print("銘柄リストが見つかりません。")
@@ -157,155 +316,46 @@ if __name__ == "__main__":
 
     print("BigQueryから必要な株価データを一括ダウンロード中...（魔法の鏡を読み込みます）")
     try:
-        # ★ 過去検証（TARGET_DATE）に対応する賢いSQLの組み立て
+        # ★ CwHのために600日（約2年強）分を遡ってダウンロード
         if TARGET_DATE:
             target_dt = pd.to_datetime(TARGET_DATE)
-            start_date_str = (target_dt - pd.Timedelta(days=200)).strftime('%Y-%m-%d')
-            # ★ 追加：答え合わせ用に「未来45日分」も余分に取得する
+            start_date_str = (target_dt - pd.Timedelta(days=600)).strftime('%Y-%m-%d')
             end_date_str = (target_dt + pd.Timedelta(days=45)).strftime('%Y-%m-%d')
-            
-            query = f"""
-                SELECT * FROM `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}`
-                WHERE Date >= '{start_date_str}' AND Date <= '{end_date_str}'
-            """
+            query = f"SELECT * FROM `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` WHERE Date >= '{start_date_str}' AND Date <= '{end_date_str}'"
         else:
-            # 毎日の自動実行（最新）の場合、今日から遡って200日分を取得
-            query = f"""
-                SELECT * FROM `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}`
-                WHERE Date >= DATE_SUB(CURRENT_DATE('Asia/Tokyo'), INTERVAL 200 DAY)
-            """
+            query = f"SELECT * FROM `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` WHERE Date >= DATE_SUB(CURRENT_DATE('Asia/Tokyo'), INTERVAL 600 DAY)"
             
         df_all = pandas_gbq.read_gbq(query, project_id=PROJECT_ID, credentials=get_credentials())
         df_all['Date'] = pd.to_datetime(df_all['Date'])
-        dict_dfs = {ticker: group.set_index('Date').sort_index() for ticker, group in df_all.groupby('Ticker')}
+        
+        # ダウンロード直後に全銘柄の指標を一括計算しておく（爆速化の要）
+        dict_dfs = {}
+        for ticker, group in df_all.groupby('Ticker'):
+            df = group.set_index('Date').sort_index()
+            dict_dfs[ticker] = IndicatorCalculator.add_indicators(df)
+            
     except Exception as e:
         print(f"BigQueryの読み込みエラー: {e}")
         exit()
 
     date_str = TARGET_DATE if TARGET_DATE else "最新(本日)"
-    print(f"\n基準日【{date_str}】でのパーフェクトオーダー押し目買い スクリーニングを開始します...\n")
+    print(f"\n基準日【{date_str}】での統合スクリーニングを開始します...\n")
 
-    total_tickers = len(target_tickers)
+    # 実際の評価日（ETF同期用）を取得
+    actual_eval_date = None
+    sample_df = next(iter(dict_dfs.values()))
+    if TARGET_DATE:
+        sample_df = sample_df.loc[:TARGET_DATE]
+    if len(sample_df) > 0:
+        actual_eval_date = sample_df.index[-1]
 
-    for i, ticker in enumerate(target_tickers):
-        if (i + 1) % 100 == 0:
-            print(f" ... スキャン進行度: {i + 1} / {total_tickers} 銘柄完了")
+    # --- 検査A（パーフェクトオーダー）を実行 ---
+    run_screening_loop(PerfectOrderScreener, "パーフェクトオーダー押し目買い", target_tickers, dict_dfs, actual_eval_date)
 
-        if ticker in dict_dfs:
-            df_full = dict_dfs[ticker].copy()
-            df = df_full.copy()
-
-            if TARGET_DATE:
-                try:
-                    df = df.loc[:TARGET_DATE].copy()
-                except KeyError:
-                    continue
-
-            if actual_eval_date is None and len(df) > 0:
-                actual_eval_date = df.index[-1]
-
-            if len(df) < 100:
-                StockScreener.drop_reasons["1_データ不足(100日)"] += 1
-                continue
-
-            df_with_indicators = IndicatorCalculator.add_indicators(df)
-            is_hit = StockScreener.check_conditions(df_with_indicators)
-
-            if is_hit:
-                hit_tickers.append(ticker)
-                hit_price = df.iloc[-1]['Close']
-                current_idx = len(df) - 1
-                max_idx = len(df_full) - 1
-
-                entry_price = None
-                entry_str = "データなし(未来)"
-                if current_idx + 1 <= max_idx:
-                    entry_price = df_full.iloc[current_idx + 1]['Open']
-                    entry_str = f"{entry_price:,.1f}円"
-
-                row_1_strs = []
-                row_2_strs = []
-                is_stopped_out = False
-
-                for idx, d in enumerate(EVAL_DAYS):
-                    target_idx = current_idx + d
-                    if is_stopped_out:
-                        perf_str = "損切除外"
-                    elif target_idx <= max_idx and entry_price is not None:
-                        future_price = df_full.iloc[target_idx]['Close']
-                        perf = (future_price / entry_price) - 1
-                        if perf <= STOP_LOSS_THRESHOLD:
-                            is_stopped_out = True
-                            perf_str = f"{future_price:,.0f}円({perf:>+5.1%} 損切)"
-                        else:
-                            aggregate_returns[d].append(perf)
-                            perf_str = f"{future_price:,.0f}円({perf:>+5.1%})"
-                    else:
-                        perf_str = "-"
-
-                    display_str = f"{d:>2}日後: {perf_str}"
-                    if idx < 5:
-                        row_1_strs.append(display_str)
-                    else:
-                        row_2_strs.append(display_str)
-
-                print("\n" + f"★ 抽出: {ticker:<6s} | 基準日終値: {hit_price:,.1f}円 -> 翌日始値: {entry_str}")
-                print(f"   ├ " + " | ".join(row_1_strs))
-                print(f"   └ " + " | ".join(row_2_strs))
-                print("-" * 100)
-
-    print(f"\n\nスクリーニング完了。抽出された銘柄数: {len(hit_tickers)}")
-    if hit_tickers:
-        print(f"合致銘柄: {', '.join(hit_tickers)}")
-
-        topix_returns = {d: None for d in EVAL_DAYS}
-        if actual_eval_date is not None and BENCHMARK_TICKER in dict_dfs:
-            bench_full = dict_dfs[BENCHMARK_TICKER]
-            if actual_eval_date in bench_full.index:
-                bench_idx = bench_full.index.get_loc(actual_eval_date)
-                max_bench_idx = len(bench_full) - 1
-                bench_entry_price = None
-                if bench_idx + 1 <= max_bench_idx:
-                    bench_entry_price = bench_full.iloc[bench_idx + 1]['Open']
-                for d in EVAL_DAYS:
-                    target_idx = bench_idx + d
-                    if bench_entry_price is not None and target_idx <= max_bench_idx:
-                        bench_close = bench_full.iloc[target_idx]['Close']
-                        topix_returns[d] = (bench_close / bench_entry_price) - 1
-        else:
-            print(f"\n※ 注意: 比較用のベンチマーク ({BENCHMARK_TICKER}) のデータがないため計算されません。")
-
-        print("\n" + "=" * 100)
-        print(f"【全体サマリー】 翌日始値(寄り付き)エントリーの平均変動率推移 (損切ライン: {STOP_LOSS_THRESHOLD:.0%})")
-        print("=" * 100)
-        print(" [抽出銘柄 平均]")
-        avg_1_strs, avg_2_strs = [], []
-        for idx, d in enumerate(EVAL_DAYS):
-            if aggregate_returns[d]:
-                avg_perf = sum(aggregate_returns[d]) / len(aggregate_returns[d])
-                survivors = len(aggregate_returns[d])
-                avg_str = f"{d:>2}日後: {avg_perf:>+5.1%} ({survivors}銘柄)"
-            else:
-                avg_str = f"{d:>2}日後: データなし"
-            if idx < 5: avg_1_strs.append(avg_str)
-            else: avg_2_strs.append(avg_str)
-
-        print(f" ├ " + " | ".join(avg_1_strs))
-        print(f" └ " + " | ".join(avg_2_strs))
-        print("-" * 100)
-
-        print(f" [参考: TOPIX連動ETF ({BENCHMARK_TICKER}) の実績]")
-        topix_1_strs, topix_2_strs = [], []
-        for idx, d in enumerate(EVAL_DAYS):
-            if d in topix_returns and topix_returns[d] is not None:
-                t_str = f"{d:>2}日後: {topix_returns[d]:>+5.1%}      "
-            else:
-                t_str = f"{d:>2}日後: データなし"
-            if idx < 5: topix_1_strs.append(t_str)
-            else: topix_2_strs.append(t_str)
-
-        print(f" ├ " + " | ".join(topix_1_strs))
-        print(f" └ " + " | ".join(topix_2_strs))
-        print("=" * 100)
-
-    StockScreener.print_report()
+    # --- 検査B（カップ・ウィズ・ハンドル）を実行 ---
+    # メモリ上の全く同じデータ（dict_dfs）を再利用するため、一瞬で終わります
+    run_screening_loop(CupWithHandleScreener, "カップ・ウィズ・ハンドル", target_tickers, dict_dfs, actual_eval_date)
+    
+    print("\n" + "="*80)
+    print("すべてのスクリーニングが完了しました。")
+    print("="*80)
