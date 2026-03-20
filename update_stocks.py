@@ -9,14 +9,13 @@ import concurrent.futures
 # ==========================================
 # 設定部分
 # ==========================================
-PROJECT_ID = 'stock-data-updater-490714'  # ★変更必須
+PROJECT_ID = 'ここにあなたのプロジェクトIDを貼り付けます'  # ★変更必須
 DATASET_ID = 'stock_db'
 TABLE_ID = 'daily_prices'
 CSV_LIST_PATH = 'tickers_list.csv'
 # ==========================================
 
 def get_credentials():
-    """GitHubのSecretから合鍵を取得する"""
     creds_json = os.environ.get('GCP_CREDENTIALS')
     if not creds_json:
         raise ValueError("合鍵（GCP_CREDENTIALS）が見つかりません。")
@@ -24,7 +23,6 @@ def get_credentials():
     return service_account.Credentials.from_service_account_info(creds_dict)
 
 def load_tickers_from_csv(file_path):
-    """銘柄リストを読み込む"""
     if not os.path.exists(file_path):
         return []
     try:
@@ -42,25 +40,23 @@ def load_tickers_from_csv(file_path):
         return []
 
 def fetch_single_ticker(ticker):
-    """1銘柄のデータを取得し、BigQuery用に整形する"""
     try:
-        # 直近5日分を取得
         df = yf.download(ticker, period="5d", progress=False)
         if df.empty:
             return None
         
-        # マルチインデックスの解除
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
             
-        # 列名のスペースをアンダーバーに変換（Adj Close -> Adj_Close）
+        # ★ ここが今回の修正ポイント！：重複する列名があれば強制的に削除する
+        df = df.loc[:, ~df.columns.duplicated()].copy()
+            
         df.columns = df.columns.str.replace(' ', '_')
-        
-        # Ticker列（銘柄コード）を追加
         df['Ticker'] = ticker
-        
-        # Dateをインデックスから通常の列に戻す
         df = df.reset_index()
+        
+        # ★ 念のための強化：日付の列名がズレていた場合、強制的に 'Date' に統一する
+        df = df.rename(columns={'index': 'Date', 'Datetime': 'Date'})
         
         return df
     except Exception:
@@ -79,7 +75,6 @@ if __name__ == "__main__":
     all_data = []
     completed_count = 0
     
-    # 5人のロボットで一斉にダウンロード開始
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(fetch_single_ticker, ticker): ticker for ticker in target_tickers}
         
@@ -98,10 +93,8 @@ if __name__ == "__main__":
 
     print("ダウンロード完了！データを結合してBigQueryへ一括送信します...")
     
-    # ★ここが最大の爆速ポイント：全銘柄を1つの巨大な表に合体させる
     final_df = pd.concat(all_data, ignore_index=True)
     
-    # BigQueryへ一撃でアップロード
     credentials = get_credentials()
     destination_table = f"{DATASET_ID}.{TABLE_ID}"
     
