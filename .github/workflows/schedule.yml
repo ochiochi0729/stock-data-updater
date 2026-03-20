@@ -44,5 +44,5 @@ jobs:
             実行結果: ${{ job.status }}
             
             ※ログの詳細はGitHubリポジトリのActionsタブから確認してください。
-          to: ここに通知を受け取りたいメールアドレスを書きます
+          to: ochiochi0729@gmail.com
           from: GitHub Actions Bot
