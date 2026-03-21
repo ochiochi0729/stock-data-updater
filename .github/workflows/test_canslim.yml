@@ -1,0 +1,51 @@
+name: Test CANSLIM (ファンダメンタルズテスト)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-canslim:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: リポジトリのコードを取得
+        uses: actions/checkout@v3
+
+      - name: Pythonをセットアップ
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: ① 準備（ここで pip install をロボットにやらせます）
+        run: pip install requests pandas
+
+      - name: ② 実行（ここで python プログラム をロボットにやらせます）
+        # ※前回作成いただいたファイル名に合わせます
+        run: python tradingview_canslim.py
+
+      - name: ③ レポートをメールの本文に読み込む
+        if: always()
+        run: |
+          echo "REPORT_CONTENT<<EOF" >> $GITHUB_ENV
+          if [ -f canslim_report.txt ]; then
+            cat canslim_report.txt >> $GITHUB_ENV
+          else
+            echo "エラーが発生したか、合致する銘柄がありませんでした。" >> $GITHUB_ENV
+          fi
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: ④ テスト結果をGmailに送信
+        uses: dawidd6/action-send-mail@v3
+        if: always()
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.GMAIL_USERNAME }}
+          password: ${{ secrets.GMAIL_PASSWORD }}
+          subject: 【テスト】CANSLIM（財務最強）抽出結果
+          body: |
+            TradingViewスクリーナーによるCANSLIM抽出結果です。
+
+            ${{ env.REPORT_CONTENT }}
+          to: yourname@gmail.com  # ★ご自身のメールアドレスに書き換えてください
+          from: GitHub Actions Bot
