@@ -46,7 +46,13 @@ def fetch_bigquery_data(target_date=None, lookback_days=600, forward_days=45):
         else:
             query = f"SELECT * FROM `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` WHERE Date >= DATE_SUB(CURRENT_DATE('Asia/Tokyo'), INTERVAL {lookback_days} DAY)"
             
-        df_all = pandas_gbq.read_gbq(query, project_id=PROJECT_ID, credentials=get_credentials())
+        # ★ ここが爆速化の魔法！高速専用レーン（Storage API）を使用する
+        df_all = pandas_gbq.read_gbq(
+            query, 
+            project_id=PROJECT_ID, 
+            credentials=get_credentials(),
+            use_bqstorage_api=True
+        )
         df_all['Date'] = pd.to_datetime(df_all['Date'])
         return df_all
     except Exception as e:
