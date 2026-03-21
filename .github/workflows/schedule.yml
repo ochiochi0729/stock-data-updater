@@ -2,7 +2,7 @@ name: Daily Stock Data Update & Screening
 
 on:
   schedule:
-    - cron: '0 9 * * *'
+    - cron: '30 9 * * 2-6' # 日本時間の火〜土 18:30 (祝日考慮なし)
   workflow_dispatch:
 
 jobs:
@@ -18,36 +18,32 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 必要なライブラリをインストール
+      - name: ① 必要なライブラリをインストール
         run: |
           python -m pip install --upgrade pip
-          pip install pandas yfinance pandas-gbq db-dtypes google-auth pyarrow google-cloud-bigquery-storage
+          # ★ mplfinance を追加しています
+          pip install pandas yfinance pandas-gbq db-dtypes google-auth pyarrow google-cloud-bigquery-storage mplfinance
 
-      - name: ① 株価取得プログラムを実行（BigQueryへ保存）
+      - name: ② 株価データの更新（BigQueryへ）を実行
         env:
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
         run: python -u update_stocks.py
 
-      - name: ② スクリーニングプログラムを実行
+      - name: ③ 本日のスクリーニングを実行
         env:
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
         run: python -u run_screener.py
 
-      - name: ③ レポートを合体させてメール本文を作る
+      - name: ④ レポートを合体させてメール本文を作る
         if: always()
         run: |
           echo "REPORT_CONTENT<<EOF" >> $GITHUB_ENV
-          
-          # 1. データ更新のレポートを差し込む
           if [ -f update_report.txt ]; then
             cat update_report.txt >> $GITHUB_ENV
           else
             echo "データ更新のログがありません。" >> $GITHUB_ENV
           fi
-          
           echo "" >> $GITHUB_ENV
-          
-          # 2. スクリーニング結果のレポートを差し込む
           if [ -f report.txt ]; then
             cat report.txt >> $GITHUB_ENV
           else
@@ -55,9 +51,10 @@ jobs:
           fi
           echo "EOF" >> $GITHUB_ENV
 
-      - name: ④ 抽出結果をGmailに送信
+      # ★ 抽出銘柄があり、チャート画像が存在する場合の送信処理
+      - name: ⑤ 抽出結果をGmailに送信（チャート画像あり）
         uses: dawidd6/action-send-mail@v3
-        if: always()
+        if: hashFiles('charts/*.png') != ''
         with:
           server_address: smtp.gmail.com
           server_port: 465
@@ -66,7 +63,27 @@ jobs:
           subject: 【本日の抽出結果】統合スクリーニング (${{ job.status }})
           body: |
             本日のシステム稼働レポートです。
+            抽出された銘柄のチャート画像を添付しています。
 
             ${{ env.REPORT_CONTENT }}
-          to: ochiochi0729@gmail.com  # ★ご自身のメールアドレスのままでOKです
+          to: yourname@gmail.com  # ★ご自身のメールアドレスに書き換えてください
+          from: GitHub Actions Bot
+          attachments: charts/*.png
+
+      # ★ 相場が悪く、1件も抽出されなかった（チャート画像がない）場合の送信処理
+      - name: ⑥ 抽出結果をGmailに送信（チャート画像なし）
+        uses: dawidd6/action-send-mail@v3
+        if: hashFiles('charts/*.png') == ''
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.GMAIL_USERNAME }}
+          password: ${{ secrets.GMAIL_PASSWORD }}
+          subject: 【本日の抽出結果】統合スクリーニング (${{ job.status }})
+          body: |
+            本日のシステム稼働レポートです。
+            ※本日は条件に合致する銘柄がなかったため、チャートの添付はありません。
+
+            ${{ env.REPORT_CONTENT }}
+          to: ochiochi0729@gmail.com  # ★ご自身のメールアドレスに書き換えてください
           from: GitHub Actions Bot
