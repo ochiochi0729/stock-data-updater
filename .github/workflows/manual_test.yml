@@ -20,7 +20,7 @@ jobs:
       - name: 必要なライブラリをインストール
         run: |
           python -m pip install --upgrade pip
-          pip install pandas yfinance pandas-gbq db-dtypes google-auth
+          pip install pandas yfinance pandas-gbq db-dtypes google-auth pyarrow google-cloud-bigquery-storage
 
       - name: ★過去検証（テスト）プログラムを実行
         env:
