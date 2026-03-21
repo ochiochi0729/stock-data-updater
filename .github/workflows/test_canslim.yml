@@ -1,6 +1,8 @@
 name: Test CANSLIM (ファンダメンタルズテスト)
 
 on:
+  schedule:
+    - cron: '30 9 * * 1-5' # 日本時間の月〜金 18:30（UTCの9:30）
   workflow_dispatch:
 
 jobs:
