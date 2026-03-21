@@ -10,10 +10,10 @@ jobs:
 
     steps:
       - name: リポジトリのコードを取得
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Pythonをセットアップ
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
@@ -41,7 +41,7 @@ jobs:
           echo "EOF" >> $GITHUB_ENV
 
       - name: テスト結果をGmailに送信
-        uses: dawidd6/action-send-mail@v3
+        uses: dawidd6/action-send-mail@v4
         if: always()
         with:
           server_address: smtp.gmail.com
