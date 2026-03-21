@@ -11,11 +11,11 @@ from google.oauth2 import service_account
 # ==========================================
 PROJECT_ID = 'stock-data-updater-490714'
 DATASET_ID = 'stock_db'
-TABLE_ID = 'daily_prices'  # ★生のデータを入れるテーブル（ビューではありません）
+TABLE_ID = 'daily_prices'
 CSV_LIST_PATH = 'tickers_list.csv'
 
 # ==========================================
-# ログ出力用クラス（メール送信用）
+# ログ出力用クラス
 # ==========================================
 class Logger:
     def __init__(self, filename):
@@ -58,17 +58,15 @@ def main():
 
     creds = get_credentials()
 
-    # 1. BigQueryから「既に登録されている銘柄」のリストを取得
     print("BigQueryの登録済み銘柄をチェック中...")
     try:
         query = f"SELECT DISTINCT Ticker FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`"
-        df_existing = pandas_gbq.read_gbq(query, project_id=PROJECT_ID, credentials=creds)
+        df_existing = pandas_gbq.read_gbq(query, project_id=PROJECT_ID, credentials=creds, use_bqstorage_api=True)
         existing_tickers = set(df_existing['Ticker'].tolist())
     except Exception as e:
         print(f"⚠️ 登録済み銘柄の取得に失敗したため、全件新規とみなします。\n")
         existing_tickers = set()
 
-    # 2. 自動振り分け
     new_tickers = [t for t in target_tickers if t not in existing_tickers]
     update_tickers = [t for t in target_tickers if t in existing_tickers]
 
@@ -77,30 +75,24 @@ def main():
     print(f" └ 新規銘柄の過去取得 (1年分): {len(new_tickers)}件\n")
 
     failed_tickers = []
-    df_to_upload = pd.DataFrame()
+    all_dfs = []  # ★ 爆速化の要：DataFrameをリストに貯める
 
-    # 3. データ取得用関数（バッチ処理）
     def download_data(tickers, period, desc):
-        nonlocal df_to_upload
         if not tickers: return
         
-        batch_size = 500  # 大量取得によるエラーを防ぐため500件ずつ
+        batch_size = 500  # Yahooへの負荷を抑えつつ最速を狙うバランス設定
         for i in range(0, len(tickers), batch_size):
             batch = tickers[i:i+batch_size]
             print(f"[{desc}] データ取得中... ({i+1}〜{min(i+batch_size, len(tickers))}件 / {len(tickers)}件)")
             
-            # yfinanceの内部エラー記録をリセット
             yf.shared._ERRORS = {}
             data = yf.download(batch, period=period, group_by='ticker', threads=True, progress=False)
             
-            # 失敗した銘柄をキャッチして記録
             if yf.shared._ERRORS:
                 for t, err in yf.shared._ERRORS.items():
-                    # 短くて分かりやすいエラー名に変換
                     err_str = str(err).split(':')[-1].strip()
                     failed_tickers.append((t, err_str))
             
-            # ダウンロードしたデータを成形
             for t in batch:
                 df_t = pd.DataFrame()
                 if len(batch) == 1:
@@ -113,13 +105,14 @@ def main():
                     df_t = df_t.reset_index()
                     df_t['Ticker'] = t
                     cols = [c for c in ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker'] if c in df_t.columns]
-                    df_to_upload = pd.concat([df_to_upload, df_t[cols]], ignore_index=True)
+                    all_dfs.append(df_t[cols])  # ★ ここで結合せず、ただ箱に放り込む
 
-    # 4. 実行
     download_data(update_tickers, "5d", "既存更新")
     download_data(new_tickers, "1y", "新規追加")
 
-    # 5. BigQueryへアップロード
+    # ★ 最後に1回だけ全データをガッチャンコする（一瞬で終わります）
+    df_to_upload = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
+
     if not df_to_upload.empty:
         df_to_upload['Date'] = pd.to_datetime(df_to_upload['Date']).dt.tz_localize(None)
         print(f"\nBigQueryへデータをアップロード中... (総件数: {len(df_to_upload):,}行)")
@@ -137,7 +130,6 @@ def main():
     else:
         print("\n⚠️ アップロードするデータがありませんでした。")
 
-    # 6. エラーサマリーの出力
     print("\n[取得失敗（エラー）レポート]")
     if failed_tickers:
         print(f" ❌ {len(failed_tickers)}件の銘柄でデータが取得できませんでした。")
