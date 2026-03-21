@@ -60,7 +60,11 @@ def run_backtest_logic(screener_class, strategy_name, target_tickers, dict_dfs, 
                 
                 (row_1 if idx < 5 else row_2).append(f"{d:>2}日後: {perf_str}")
 
+            # ★ YahooファイナンスのURLを生成
+            yfinance_url = f"https://finance.yahoo.co.jp/quote/{ticker}"
+
             print(f"\n★ 抽出: {ticker:<6s} | 基準日終値: {hit_price:,.1f}円 -> 翌日始値: {entry_str}")
+            print(f"   ├ チャート確認: {yfinance_url}")
             print(f"   ├ " + " | ".join(row_1))
             print(f"   └ " + " | ".join(row_2))
             print("-" * 80)
@@ -99,7 +103,6 @@ if __name__ == "__main__":
         "③ブレイクアウト": {d: [] for d in EVAL_DAYS}
     }
     
-    # ★ 全期間のTOPIX平均を出すための箱
     grand_benchmark = {d: [] for d in EVAL_DAYS}
 
     print(f"\n指定された {len(TARGET_DATES)} つの基準日でバックテストを開始します...\n")
