@@ -1,123 +1,118 @@
 import sys
-import json
-import requests
+import time
 import pandas as pd
-from core import Logger # 既存のcore.pyからLoggerを拝借
+import yfinance as yf
+from core import Logger, load_tickers_from_csv
 
 sys.stdout = Logger("canslim_report.txt")
 
-# ==========================================
-# ★ TradingViewスクリーナー（日本株）の設定
-# ==========================================
-SCANNER_URL = "https://scanner.tradingview.com/japan/scan"
+# ★ 判定基準
+TARGET_ROE = 0.17        # ROE 17%以上
+TARGET_GROWTH = 0.25     # 売上・利益の成長率 25%以上
 
-# ★ 判定基準の設定
-TARGET_ROE = 17          # ROE 17%以上
-TARGET_GROWTH = 25       # 売上・EPS成長率 25%以上
-
-def fetch_tradingview_canslim_stocks():
-    print(f"{'='*60}\n▼ TradingViewスクリーナー（CANSLIM法）実行中...\n{'='*60}")
+def analyze_fundamentals(ticker):
+    print(f"[{ticker}] 財務データを取得中...", end="", flush=True)
+    t = yf.Ticker(ticker)
+    info = t.info
     
-    # ★ TradingViewへの「手紙（リクエストPayload）」を作成
-    # このJSONデータが「裏口」の鍵です。
-    payload = {
-        "filter": [
-            # 日本市場の上場株式に限定
-            {"left": "market", "operation": "equal", "right": "japan"},
-            {"left": "is_primary", "operation": "equal", "right": True},
-            {"left": "type", "operation": "in_range", "right": ["stock"]},
-            {"left": "subtype", "operation": "in_range", "right": ["common"]},
-            
-            # --- 【CANSLIM条件の指定】 ---
-            # 1. R (ROE 17%以上)
-            {"left": "return_on_equity", "operation": "egreater", "right": TARGET_ROE},
-            
-            # 2. A (直近4四半期(TTM)の売上・EPS成長率 25%以上)
-            {"left": "revenue_growth_ttm", "operation": "egreater", "right": TARGET_GROWTH},
-            {"left": "earnings_per_share_diluted_growth_ttm", "operation": "egreater", "right": TARGET_GROWTH},
-            
-            # 3. C (直近1四半期の売上・EPS成長率 25%以上)
-            {"left": "revenue_growth_quarterly", "operation": "egreater", "right": TARGET_GROWTH},
-            {"left": "earnings_per_share_diluted_growth_quarterly", "operation": "egreater", "right": TARGET_GROWTH}
-        ],
-        "options": {"lang": "ja"},
-        "markets": ["japan"],
-        "symbols": {"query": {"types": []}, "tickers": []},
-        
-        # --- 【取得したいフィールド（列）の指定】 ---
-        "columns": [
-            "name",                                         # 0: ティッカー
-            "exchange",                                     # 1: 取引所
-            "description",                                  # 2: 会社名
-            "return_on_equity",                             # 3: ROE
-            "revenue_growth_quarterly",                     # 4: 四半期売上成長率
-            "earnings_per_share_diluted_growth_quarterly",  # 5: 四半期EPS成長率
-            "revenue_growth_ttm",                           # 6: TTM売上成長率
-            "earnings_per_share_diluted_growth_ttm",        # 7: TTMEPS成長率
-            "total_shares_outstanding",                     # 8: 発行済株式数
-            "held_by_institutions"                          # 9: 機関投資家保有比率(%)
-        ],
-        # 時価総額が大きい順にソート
-        "sort": {"sortBy": "market_cap_basic", "sortOrder": "desc"},
-        # 取得件数（最大150件。もし足りなければここを増やす）
-        "range": [0, 150] 
+    # --- 結果を格納する箱 ---
+    res = {
+        "Ticker": ticker,
+        "Name": info.get("longName", ticker),
+        "ROE": None,
+        "Rev_Growth": None,
+        "Net_Inc_Growth": None,
+        "Shares": info.get("sharesOutstanding", "不明"),
+        "Institutions": "データなし",
+        "Pass": False,
+        "Drop_Reason": ""
     }
+    
+    # 1. ROEの判定
+    roe = info.get("returnOnEquity")
+    if roe is not None:
+        res["ROE"] = roe
+        if roe < TARGET_ROE:
+            res["Drop_Reason"] = f"ROE不足 ({roe:.1%})"
+            print(f" ❌ {res['Drop_Reason']}")
+            return res
+    else:
+        res["Drop_Reason"] = "ROEデータなし"
+        print(" ❌ ROEデータなし")
+        return res
 
+    # 2. 年次財務データ（Income Statement）の取得
     try:
-        # TradingViewのサーバーにPOSTリクエストを送信
-        response = requests.post(SCANNER_URL, json=payload, timeout=15)
-        response.raise_for_status() # エラーがあれば例外を投げる
-        
-        # JSONをパース
-        data = response.json()
-        
-        if "data" not in data or not data["data"]:
-            print("❌ 条件に合致する銘柄は見つかりませんでした。")
-            return []
+        financials = t.income_stmt
+        if financials is None or financials.empty or financials.shape[1] < 2:
+            res["Drop_Reason"] = "過去2年分の財務データなし"
+            print(" ❌ 財務データ不足")
+            return res
             
-        print(f"✅ 相場最強の成長株が {len(data['data'])} 銘柄見つかりました！\n")
+        # 売上高（Total Revenue）と純利益（Net Income）を取得
+        rev_current = financials.loc["Total Revenue"].iloc[0]
+        rev_prev = financials.loc["Total Revenue"].iloc[1]
+        inc_current = financials.loc["Net Income"].iloc[0]
+        inc_prev = financials.loc["Net Income"].iloc[1]
         
-        hit_results = []
-        for item in data["data"]:
-            d = item["d"] #columnsで指定した順に配列に入っている
+        # 成長率の計算
+        if rev_prev and rev_prev > 0:
+            res["Rev_Growth"] = (rev_current / rev_prev) - 1
+        if inc_prev and inc_prev > 0:
+            res["Net_Inc_Growth"] = (inc_current / inc_prev) - 1
             
-            # ティッカー名を日本株の形式（例: TSE:7203 -> 7203.T）に変換
-            ticker_raw = d[0]
-            exchange_raw = d[1]
-            ticker = ticker_raw
-            if exchange_raw == "TSE": # 東証の場合のみ.Tをつける（簡易対応）
-                ticker = f"{ticker_raw}.T"
-                
-            res = {
-                "Ticker": ticker,
-                "Name": d[2],
-                "ROE": d[3],
-                "C_Rev": d[4],
-                "C_EPS": d[5],
-                "A_Rev": d[6],
-                "A_EPS": d[7],
-                "Shares": d[8],
-                "Inst_Hold": d[9]
-            }
-            hit_results.append(res)
+        # 成長率の判定
+        if res["Rev_Growth"] is None or res["Rev_Growth"] < TARGET_GROWTH:
+            res["Drop_Reason"] = f"売上成長率不足 ({res['Rev_Growth']:.1%} if res['Rev_Growth'] is not None else '計算不可')"
+            print(f" ❌ {res['Drop_Reason']}")
+            return res
             
-        return hit_results
-
+        if res["Net_Inc_Growth"] is None or res["Net_Inc_Growth"] < TARGET_GROWTH:
+            res["Drop_Reason"] = f"純利益成長率不足 ({res['Net_Inc_Growth']:.1%} if res['Net_Inc_Growth'] is not None else '計算不可')"
+            print(f" ❌ {res['Drop_Reason']}")
+            return res
+            
     except Exception as e:
-        print(f"❌ TradingViewスクリーナー接続エラー: {e}")
-        return []
+        res["Drop_Reason"] = f"財務データ解析エラー"
+        print(" ❌ 財務データ解析エラー")
+        return res
+
+    # 3. 参考情報：機関投資家の取得
+    try:
+        inst = t.institutional_holders
+        if inst is not None and not inst.empty:
+            top_holders = inst['Holder'].head(3).tolist()
+            res["Institutions"] = ", ".join(top_holders)
+    except:
+        pass
+
+    # すべての条件をクリア！
+    res["Pass"] = True
+    print(" ✅ 条件クリア！")
+    return res
 
 if __name__ == "__main__":
-    hit_stocks = fetch_tradingview_canslim_stocks()
+    print(f"{'='*60}\n▼ ファンダメンタルズ（CANSLIMプロトタイプ）スクリーニング\n{'='*60}")
     
-    if hit_stocks:
-        print(f"{'='*60}\n★★★ CANSLIM（財務最強）銘柄リスト ★★★\n{'='*60}")
-        for r in hit_stocks:
-            print(f"\n★ {r['Ticker']} : {r['Name']}")
-            print(f" ├ ROE       : {r['ROE']:.1f}%")
-            print(f" ├ 【C】 直近四半期成長 (YoY)")
-            print(f" │ └ 売上: {r['C_Rev']:>+5.1%}% | EPS: {r['C_EPS']:>+5.1%}%")
-            print(f" ├ 【A】 年間持続成長 (TTM YoY)")
-            print(f" │ └ 売上: {r['A_Rev']:>+5.1%}% | EPS: {r['A_EPS']:>+5.1%}%")
-            print(f" ├ 【S】 発行済株式: {r['Shares']:,} 株")
-            print(f" └ 【I】 機関投資家: {r['Inst_Hold']:.1f}% 保有")
+    # ★ 激重処理になるため、まずは日本の代表的な銘柄10個だけでテスト稼働します
+    test_tickers = ["7203.T", "6920.T", "9984.T", "6861.T", "6098.T", "4385.T", "8035.T", "9983.T", "7974.T", "6758.T"]
+    
+    print(f"対象銘柄数: {len(test_tickers)}銘柄（テスト稼働）\n")
+    
+    hit_results = []
+    
+    for ticker in test_tickers:
+        res = analyze_fundamentals(ticker)
+        if res["Pass"]:
+            hit_results.append(res)
+        time.sleep(1) # Yahooに弾かれないよう1秒待機
+        
+    print(f"\n{'='*60}\n抽出完了: {len(hit_results)}銘柄\n{'='*60}")
+    
+    for r in hit_results:
+        print(f"\n★ 抽出: {r['Ticker']} ({r['Name']})")
+        print(f" ├ ROE       : {r['ROE']:.1%}")
+        print(f" ├ 売上成長率: {r['Rev_Growth']:.1%} (YoY)")
+        print(f" ├ 利益成長率: {r['Net_Inc_Growth']:.1%} (YoY)")
+        print(f" ├ 発行済株式: {r['Shares']:,} 株")
+        print(f" └ 機関投資家: {r['Institutions']}")
