@@ -47,5 +47,5 @@ jobs:
             TradingViewスクリーナーによるCANSLIM抽出結果です。
 
             ${{ env.REPORT_CONTENT }}
-          to: yourname@gmail.com  # ★ご自身のメールアドレスに書き換えてください
+          to: ochiochi0729@gmail.com  # ★ご自身のメールアドレスに書き換えてください
           from: GitHub Actions Bot
