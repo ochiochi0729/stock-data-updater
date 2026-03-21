@@ -23,10 +23,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas yfinance pandas-gbq db-dtypes google-auth pyarrow google-cloud-bigquery-storage
 
-      #- name: ① 株価取得プログラムを実行（BigQueryへ保存）
-      #  env:
-      #    GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
-      #  run: python -u update_stocks.py
+      - name: ① 株価取得プログラムを実行（BigQueryへ保存）
+        env:
+          GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+        run: python -u update_stocks.py
 
       - name: ② スクリーニングプログラムを実行
         env:
