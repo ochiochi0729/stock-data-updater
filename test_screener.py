@@ -7,14 +7,14 @@ from strategies.cup_with_handle import CupWithHandleScreener
 from strategies.breakout import BreakoutScreener
 
 # ==========================================
-# ★ テストしたい基準日を自由に指定（最大5つでも10個でもOK）
+# ★ テストしたい基準日を自由に指定
 # ==========================================
 TARGET_DATES = [
-    '2025-06-03',
-    '2025-07-01',
-    '2024-08-01',
-    '2025-09-01',
-    '2025-10-01'
+    '2024-06-03',
+    '2024-09-02',
+    '2024-12-02',
+    '2025-03-03',
+    '2025-06-03'
 ]
 
 sys.stdout = Logger("test_report.txt")
@@ -29,7 +29,6 @@ def run_backtest_logic(screener_class, strategy_name, target_tickers, dict_dfs, 
         if ticker not in dict_dfs: continue
         df_full = dict_dfs[ticker]
         
-        # ★ 指定した基準日までのデータに絞り込む（未来のデータをカンニングしないため）
         try: df = df_full.loc[:target_date].copy()
         except KeyError: continue
         if len(df) == 0: continue
@@ -38,8 +37,6 @@ def run_backtest_logic(screener_class, strategy_name, target_tickers, dict_dfs, 
             hit_tickers.append(ticker)
             hit_price = df.iloc[-1]['Close']
             
-            # 未来のデータ（答え合わせ用）を取得するためのインデックス計算
-            # df_full の中で、判定時の最終日が何行目かを正確に特定する
             current_idx = df_full.index.get_loc(df.index[-1])
             max_idx = len(df_full) - 1
             
@@ -87,31 +84,26 @@ if __name__ == "__main__":
     target_tickers = load_tickers_from_csv()
     if BENCHMARK_TICKER in target_tickers: target_tickers.remove(BENCHMARK_TICKER)
     
-    # ==========================================
-    # ★ 複数日付をカバーするために必要な期間を自動計算
-    # ==========================================
     dates = pd.to_datetime(TARGET_DATES)
     min_date = dates.min()
     max_date = dates.max()
     days_diff = (max_date - min_date).days
     
-    # 一番古い日付から600日遡り、一番新しい日付から45日後までを一括ダウンロード！
     print("BigQueryから検証に必要な全期間のデータを一括ダウンロード中...")
     df_all = fetch_bigquery_data(target_date=min_date.strftime('%Y-%m-%d'), lookback_days=600, forward_days=45 + days_diff)
-    
-    # 指標は「全期間」について1回だけ計算する（超高速）
     dict_dfs = {ticker: IndicatorCalculator.add_indicators(group.set_index('Date').sort_index()) for ticker, group in df_all.groupby('Ticker')}
     
-    # 各戦略ごとの全期間総合リターンを保存する箱
     grand_results = {
         "①パーフェクトオーダー": {d: [] for d in EVAL_DAYS},
         "②カップ・ウィズ・ハンドル": {d: [] for d in EVAL_DAYS},
         "③ブレイクアウト": {d: [] for d in EVAL_DAYS}
     }
+    
+    # ★ 全期間のTOPIX平均を出すための箱
+    grand_benchmark = {d: [] for d in EVAL_DAYS}
 
     print(f"\n指定された {len(TARGET_DATES)} つの基準日でバックテストを開始します...\n")
 
-    # 指定された日付ごとにループしてテスト実行
     for t_date in TARGET_DATES:
         print(f"\n\n{'#'*80}\n# 基準日: {t_date} のスクリーニング\n{'#'*80}")
         
@@ -119,14 +111,44 @@ if __name__ == "__main__":
         res2 = run_backtest_logic(CupWithHandleScreener, "②カップ・ウィズ・ハンドル", target_tickers, dict_dfs, t_date)
         res3 = run_backtest_logic(BreakoutScreener, "③底練りからのブレイクアウト", target_tickers, dict_dfs, t_date)
         
-        # 今回の抽出結果を、全体の箱（grand_results）に合流させる
         for d in EVAL_DAYS:
             grand_results["①パーフェクトオーダー"][d].extend(res1[d])
             grand_results["②カップ・ウィズ・ハンドル"][d].extend(res2[d])
             grand_results["③ブレイクアウト"][d].extend(res3[d])
 
+        # ==========================================
+        # ★ TOPIX連動ETF (1306.T) の実績計算（各基準日ごと）
+        # ==========================================
+        bench_returns = {d: None for d in EVAL_DAYS}
+        if BENCHMARK_TICKER in dict_dfs:
+            bench_df = dict_dfs[BENCHMARK_TICKER]
+            try:
+                b_past = bench_df.loc[:t_date]
+                if len(b_past) > 0:
+                    b_curr_idx = bench_df.index.get_loc(b_past.index[-1])
+                    b_max_idx = len(bench_df) - 1
+                    b_entry = bench_df.iloc[b_curr_idx + 1]['Open'] if b_curr_idx + 1 <= b_max_idx else None
+                    for d in EVAL_DAYS:
+                        b_tgt_idx = b_curr_idx + d
+                        if b_entry and b_tgt_idx <= b_max_idx:
+                            perf = (bench_df.iloc[b_tgt_idx]['Close'] / b_entry) - 1
+                            bench_returns[d] = perf
+                            grand_benchmark[d].append(perf)
+            except KeyError:
+                pass
+                
+        print(f"\n [参考: TOPIX連動ETF ({BENCHMARK_TICKER}) の実績]")
+        b_1, b_2 = [], []
+        for idx, d in enumerate(EVAL_DAYS):
+            val = bench_returns[d]
+            b_str = f"{d:>2}d: {val:>+5.1%}      " if val is not None else f"{d:>2}d: データなし"
+            (b_1 if idx < 5 else b_2).append(b_str)
+        print(f" ├ " + " | ".join(b_1))
+        print(f" └ " + " | ".join(b_2))
+
+
     # ==========================================
-    # ★ 最後に各戦略の「全基準日での総合平均結果」を出力する
+    # 総合平均結果の出力
     # ==========================================
     print(f"\n\n{'='*80}")
     print("★★★ 全基準日の総合平均パフォーマンス ★★★")
@@ -135,8 +157,6 @@ if __name__ == "__main__":
     for strategy_name, agg_returns in grand_results.items():
         print(f"\n▼ {strategy_name} (総合)")
         avg_1, avg_2 = [], []
-        
-        # どの期間でも1度も抽出されなかった戦略のスキップ処理
         total_trades = max([len(agg_returns[d]) for d in EVAL_DAYS] + [0])
         if total_trades == 0:
             print("  全期間を通じて抽出銘柄なし")
@@ -153,3 +173,16 @@ if __name__ == "__main__":
             
         print(f" ├ " + " | ".join(avg_1))
         print(f" └ " + " | ".join(avg_2))
+
+    # ★ TOPIX総合平均の出力
+    print(f"\n▼ 参考: TOPIX連動ETF ({BENCHMARK_TICKER}) (総合平均)")
+    bench_avg_1, bench_avg_2 = [], []
+    for idx, d in enumerate(EVAL_DAYS):
+        vals = grand_benchmark[d]
+        if vals:
+            avg_str = f"{d:>2}d: {sum(vals)/len(vals):>+5.1%} ({len(vals)}回)"
+        else:
+            avg_str = f"{d:>2}d: データなし"
+        (bench_avg_1 if idx < 5 else bench_avg_2).append(avg_str)
+    print(f" ├ " + " | ".join(bench_avg_1))
+    print(f" └ " + " | ".join(bench_avg_2))
