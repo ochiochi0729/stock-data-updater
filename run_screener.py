@@ -8,7 +8,7 @@ from google.oauth2 import service_account
 # ==========================================
 # 設定部分
 # ==========================================
-PROJECT_ID = 'stock-data-updater-490714'import sys
+PROJECT_ID = 'stock-data-updater-490714'
 from core import Logger, load_tickers_from_csv, fetch_bigquery_data, BENCHMARK_TICKER
 from strategies.indicators import IndicatorCalculator
 from strategies.perfect_order import PerfectOrderScreener
