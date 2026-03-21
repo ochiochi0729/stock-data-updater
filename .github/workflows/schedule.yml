@@ -33,14 +33,25 @@ jobs:
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
         run: python -u run_screener.py
 
-      - name: ③ レポート（テキスト）をメールの本文に読み込む
+      - name: ③ レポートを合体させてメール本文を作る
         if: always()
         run: |
           echo "REPORT_CONTENT<<EOF" >> $GITHUB_ENV
+          
+          # 1. データ更新のレポートを差し込む
+          if [ -f update_report.txt ]; then
+            cat update_report.txt >> $GITHUB_ENV
+          else
+            echo "データ更新のログがありません。" >> $GITHUB_ENV
+          fi
+          
+          echo "" >> $GITHUB_ENV
+          
+          # 2. スクリーニング結果のレポートを差し込む
           if [ -f report.txt ]; then
             cat report.txt >> $GITHUB_ENV
           else
-            echo "エラーが発生したか、合致する銘柄がありませんでした。" >> $GITHUB_ENV
+            echo "スクリーニング結果のログがありません。" >> $GITHUB_ENV
           fi
           echo "EOF" >> $GITHUB_ENV
 
@@ -52,11 +63,10 @@ jobs:
           server_port: 465
           username: ${{ secrets.GMAIL_USERNAME }}
           password: ${{ secrets.GMAIL_PASSWORD }}
-          subject: 【本日の抽出結果】パーフェクトオーダー押し目買い (${{ job.status }})
+          subject: 【本日の抽出結果】統合スクリーニング (${{ job.status }})
           body: |
-            本日の株価データ更新およびスクリーニングが完了しました。
+            本日のシステム稼働レポートです。
 
-            ▼ スクリーニング結果 ▼
             ${{ env.REPORT_CONTENT }}
-          to: ochiochi0729@gmail.com
+          to: yourname@gmail.com  # ★ご自身のメールアドレスのままでOKです
           from: GitHub Actions Bot
