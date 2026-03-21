@@ -41,7 +41,8 @@ def get_credentials():
 def load_tickers_from_csv():
     if not os.path.exists(CSV_LIST_PATH): return []
     try:
-        df = pd.read_csv(CSV_LIST_PATH)
+        # ★ 「1行目からすべてデータとして扱ってね」と指示する
+        df = pd.read_csv(CSV_LIST_PATH, header=None)
         return [c.strip().upper() + '.T' if not c.strip().upper().endswith('.T') else c.strip().upper() for c in df.iloc[:, 0].astype(str) if c.strip()]
     except: return []
 
