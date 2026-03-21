@@ -88,7 +88,7 @@ def main():
             print(f"[{desc}] データ取得中... ({i+1}〜{min(i+batch_size, len(tickers))}件 / {len(tickers)}件)")
             
             yf.shared._ERRORS = {}
-            data = yf.download(batch, period=period, group_by='ticker', threads=True, progress=False)
+            data = yf.download(batch, period=period, group_by='ticker', threads=True, progress=False, auto_adjust=False)
             time.sleep(1) # ★ Yahooに怒られないように1秒お休みする
             
             if yf.shared._ERRORS:
