@@ -17,8 +17,9 @@ jobs:
           python-version: '3.11'
 
       - name: ① 準備（ここで pip install をロボットにやらせます）
-        run: pip install requests pandas
-
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas yfinance pandas-gbq db-dtypes google-auth pyarrow google-cloud-bigquery-storage requests
       - name: ② 実行（ここで python プログラム をロボットにやらせます）
         # ※前回作成いただいたファイル名に合わせます
         run: python tradingview_canslim.py
