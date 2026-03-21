@@ -68,5 +68,5 @@ jobs:
             本日のシステム稼働レポートです。
 
             ${{ env.REPORT_CONTENT }}
-          to: yourname@gmail.com  # ★ご自身のメールアドレスのままでOKです
+          to: ochiochi0729@gmail.com  # ★ご自身のメールアドレスのままでOKです
           from: GitHub Actions Bot
