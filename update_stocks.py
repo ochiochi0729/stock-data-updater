@@ -4,6 +4,7 @@ import json
 import pandas as pd
 import yfinance as yf
 import pandas_gbq
+import time
 from google.oauth2 import service_account
 
 # ==========================================
@@ -81,13 +82,14 @@ def main():
     def download_data(tickers, period, desc):
         if not tickers: return
         
-        batch_size = 500  # Yahooへの負荷を抑えつつ最速を狙うバランス設定
+        batch_size = 100  # ★ 500から100に減らして安全運転
         for i in range(0, len(tickers), batch_size):
             batch = tickers[i:i+batch_size]
             print(f"[{desc}] データ取得中... ({i+1}〜{min(i+batch_size, len(tickers))}件 / {len(tickers)}件)")
             
             yf.shared._ERRORS = {}
             data = yf.download(batch, period=period, group_by='ticker', threads=True, progress=False)
+            time.sleep(1) # ★ Yahooに怒られないように1秒お休みする
             
             if yf.shared._ERRORS:
                 for t, err in yf.shared._ERRORS.items():
@@ -116,6 +118,7 @@ def main():
 
     if not df_to_upload.empty:
         df_to_upload['Date'] = pd.to_datetime(df_to_upload['Date']).dt.tz_localize(None)
+        df_to_upload.columns = df_to_upload.columns.astype(str)
         print(f"\nBigQueryへデータをアップロード中... (総件数: {len(df_to_upload):,}行)")
         try:
             pandas_gbq.to_gbq(
