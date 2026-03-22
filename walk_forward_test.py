@@ -39,7 +39,7 @@ def run_simulation():
     if BENCHMARK_TICKER not in tickers: tickers.append(BENCHMARK_TICKER)
     
     print("1. データ取得中...")
-    df_all = fetch_bigquery_data(target_date=END_DATE, lookback_days=500)
+    df_all = fetch_bigquery_data(target_date=END_DATE, lookback_days=800, forward_days=0)
     dict_dfs = {t: g.set_index('Date').sort_index() for t, g in df_all.groupby('Ticker') if t in tickers}
     
     benchmark_df = dict_dfs[BENCHMARK_TICKER].loc[START_DATE:END_DATE]
