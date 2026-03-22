@@ -6,7 +6,8 @@ from google.oauth2 import service_account
 # --- 共通設定 ---
 PROJECT_ID = 'stock-data-updater-490714'
 DATASET_ID = 'stock_db'
-VIEW_ID = 'clean_daily_prices'
+# ★ update_stocks.py で作成したテーブル名に合わせました
+TABLE_ID = 'daily_prices' 
 CSV_LIST_PATH = 'tickers_list.csv'
 BENCHMARK_TICKER = '1306.T'
 EVAL_DAYS = [3, 6, 7, 10, 13, 16, 19, 22, 25, 28]
@@ -31,7 +32,8 @@ def get_credentials():
 def load_tickers_from_csv():
     if not os.path.exists(CSV_LIST_PATH): return []
     try:
-        df = pd.read_csv(CSV_LIST_PATH)
+        # ★ 修正: 1行目がヘッダー（見出し）として消えてしまうのを防ぐため header=None を追加
+        df = pd.read_csv(CSV_LIST_PATH, header=None)
         return [c.strip().upper() + '.T' if not c.strip().upper().endswith('.T') else c.strip().upper() for c in df.iloc[:, 0].astype(str) if c.strip()]
     except: return []
 
@@ -42,9 +44,9 @@ def fetch_bigquery_data(target_date=None, lookback_days=600, forward_days=45):
             target_dt = pd.to_datetime(target_date)
             start_str = (target_dt - pd.Timedelta(days=lookback_days)).strftime('%Y-%m-%d')
             end_str = (target_dt + pd.Timedelta(days=forward_days)).strftime('%Y-%m-%d')
-            query = f"SELECT * FROM `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` WHERE Date >= '{start_str}' AND Date <= '{end_str}'"
+            query = f"SELECT * FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}` WHERE Date >= '{start_str}' AND Date <= '{end_str}'"
         else:
-            query = f"SELECT * FROM `{PROJECT_ID}.{DATASET_ID}.{VIEW_ID}` WHERE Date >= DATE_SUB(CURRENT_DATE('Asia/Tokyo'), INTERVAL {lookback_days} DAY)"
+            query = f"SELECT * FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}` WHERE Date >= DATE_SUB(CURRENT_DATE('Asia/Tokyo'), INTERVAL {lookback_days} DAY)"
             
         # ★ ここが爆速化の魔法！高速専用レーン（Storage API）を使用する
         df_all = pandas_gbq.read_gbq(
