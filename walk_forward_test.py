@@ -34,7 +34,7 @@ def run_simulation():
         tickers.append(BENCHMARK_TICKER)
 
     # ==========================================
-    # フェーズ1：データのダウンロード（ミュート機能付き）
+    # フェーズ1：データのダウンロード
     # ==========================================
     print("1. 過去データの取得とインジケーター計算中...")
     print("   (Yahooの不要なエラーは非表示にしています。約1〜3分お待ちください)")
@@ -45,12 +45,11 @@ def run_simulation():
         batch = tickers[i:i+batch_size]
         print(f" ▶ データダウンロード中... ({min(i+batch_size, len(tickers))}件 / {len(tickers)}件 完了)")
         
-        # ★魔法のコード：yfinanceの不要なエラーメッセージを完全にゴミ箱へ捨てる
         with open(os.devnull, 'w') as devnull:
             with redirect_stdout(devnull), redirect_stderr(devnull):
                 data = yf.download(batch, start="2024-06-01", end="2026-01-10", group_by='ticker', auto_adjust=False, progress=False)
         
-        time.sleep(1) # Yahooに怒られないよう1秒休憩
+        time.sleep(1) 
         
         for t in batch:
             try:
@@ -76,7 +75,7 @@ def run_simulation():
     screener = PerfectOrderScreener()
 
     # ==========================================
-    # フェーズ2：日次シミュレーション（進捗表示付き）
+    # フェーズ2：日次シミュレーション
     # ==========================================
     print(f"\n2. シミュレーション開始 (全 {len(trading_days)} 営業日)")
     print("   (過去1年間の相場を1日ずつ疑似体験しています...)")
@@ -84,18 +83,26 @@ def run_simulation():
     for i, current_date in enumerate(trading_days):
         today_str = current_date.strftime('%Y-%m-%d')
         
-        # ★追加：20日（約1ヶ月）進むごとに、画面に進捗を報告する
         if i % 20 == 0 or i == len(trading_days) - 1:
             print(f"  📅 タイムトラベル中: {today_str} ({i+1}/{len(trading_days)}日目) | 現在の保有銘柄数: {len(positions)}")
 
+        # -------------------------------------------------
+        # 既存ポジションの売却（エグジット）
+        # -------------------------------------------------
         sold_tickers = []
         for ticker, pos in positions.items():
             df = dict_dfs[ticker]
             if current_date not in df.index: continue
             
             today_data = df.loc[current_date]
-            t_open, t_high, t_low, t_close, sma25 = today_data['Open'], today_data['High'], today_data['Low'], today_data['Close'], today_data['SMA25']
-            if pd.isna(sma25): continue
+            
+            # ★バグ修正：SMA25が存在しない場合は安全にスキップ
+            sma25 = today_data.get('SMA25')
+            t_open = today_data.get('Open')
+            if pd.isna(sma25) or pd.isna(t_open): continue
+                
+            t_high = today_data.get('High')
+            t_low = today_data.get('Low')
                 
             entry_price = pos['entry_price']
             tp_price = entry_price * TAKE_PROFIT_PCT
@@ -121,13 +128,16 @@ def run_simulation():
         for t in sold_tickers:
             del positions[t]
 
+        # -------------------------------------------------
+        # 新規銘柄の購入（エントリー）
+        # -------------------------------------------------
         valid_candidates = []
         for ticker in candidates_for_tomorrow:
             if ticker in positions: continue 
             df = dict_dfs[ticker]
             prev_idx = df.index.get_loc(current_date) - 1
             if prev_idx >= 0:
-                valid_candidates.append((ticker, df.iloc[prev_idx]['Volume']))
+                valid_candidates.append((ticker, df.iloc[prev_idx].get('Volume', 0)))
         
         valid_candidates.sort(key=lambda x: x[1], reverse=True) 
 
@@ -138,9 +148,16 @@ def run_simulation():
             prev_idx = df.index.get_loc(current_date) - 1
             if prev_idx < 0: continue
                 
-            prev_close = df.iloc[prev_idx]['Close']
+            prev_close = df.iloc[prev_idx].get('Close')
             today_data = df.loc[current_date]
-            t_open, t_high, t_low, t_close, sma25 = today_data['Open'], today_data['High'], today_data['Low'], today_data['Close'], today_data['SMA25']
+            
+            # ★バグ修正：SMA25や株価が存在しない場合は安全にスキップ
+            sma25 = today_data.get('SMA25')
+            t_open = today_data.get('Open')
+            if pd.isna(sma25) or pd.isna(t_open) or pd.isna(prev_close): continue
+
+            t_high = today_data.get('High')
+            t_low = today_data.get('Low')
             
             buy_price = None
             if t_open > prev_close:
@@ -161,6 +178,9 @@ def run_simulation():
                         trade_history.append({'ticker': ticker, 'entry_date': today_str, 'exit_date': today_str, 'entry_price': buy_price, 'exit_price': sl_price, 'profit': profit, 'reason': "損切り(即日)"})
                         del positions[ticker]
 
+        # -------------------------------------------------
+        # 明日のためのスクリーニング
+        # -------------------------------------------------
         candidates_for_tomorrow = []
         for ticker, df in dict_dfs.items():
             if ticker == BENCHMARK_TICKER: continue
@@ -170,10 +190,17 @@ def run_simulation():
                     candidates_for_tomorrow.append(ticker)
             except: pass
 
+        # -------------------------------------------------
+        # 資産の記録
+        # -------------------------------------------------
         current_equity = cash
         for ticker, pos in positions.items():
             if current_date in dict_dfs[ticker].index:
-                current_equity += dict_dfs[ticker].loc[current_date]['Close'] * pos['shares']
+                close_price = dict_dfs[ticker].loc[current_date].get('Close')
+                if not pd.isna(close_price):
+                    current_equity += close_price * pos['shares']
+                else:
+                    current_equity += pos['entry_price'] * pos['shares']
             else:
                 current_equity += pos['entry_price'] * pos['shares'] 
                 
