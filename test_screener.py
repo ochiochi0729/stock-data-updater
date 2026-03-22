@@ -1,7 +1,7 @@
 import sys
 import pandas as pd
 from core import Logger, load_tickers_from_csv, fetch_bigquery_data, BENCHMARK_TICKER, EVAL_DAYS, STOP_LOSS_THRESHOLD
-from strategies.indicators import IndicatorCalculator
+# ★ 不要になった IndicatorCalculator の読み込みを削除
 from strategies.perfect_order import PerfectOrderScreener
 from strategies.cup_with_handle import CupWithHandleScreener
 from strategies.breakout import BreakoutScreener
@@ -21,7 +21,11 @@ sys.stdout = Logger("test_report.txt")
 
 def run_backtest_logic(screener_class, strategy_name, target_tickers, dict_dfs, target_date):
     print(f"\n{'='*80}\n▼ 過去検証: {strategy_name} (基準日: {target_date})\n{'='*80}")
-    screener_class.reset_reasons()
+    
+    # ★ クラスをインスタンス化（実体化）してから使うように修正
+    screener = screener_class()
+    screener.reset_reasons()
+    
     hit_tickers = []
     aggregate_returns = {d: [] for d in EVAL_DAYS}
 
@@ -33,7 +37,8 @@ def run_backtest_logic(screener_class, strategy_name, target_tickers, dict_dfs, 
         except KeyError: continue
         if len(df) == 0: continue
 
-        if screener_class.check_conditions(df):
+        # ★ インスタンス化した screener に対して判定を行う
+        if screener.check_conditions(df):
             hit_tickers.append(ticker)
             hit_price = df.iloc[-1]['Close']
             
@@ -95,7 +100,9 @@ if __name__ == "__main__":
     
     print("BigQueryから検証に必要な全期間のデータを一括ダウンロード中...")
     df_all = fetch_bigquery_data(target_date=min_date.strftime('%Y-%m-%d'), lookback_days=600, forward_days=45 + days_diff)
-    dict_dfs = {ticker: IndicatorCalculator.add_indicators(group.set_index('Date').sort_index()) for ticker, group in df_all.groupby('Ticker')}
+    
+    # ★ ここが爆速化の要！重い計算処理を通さず、DBのデータをそのまま辞書に詰めるだけ！
+    dict_dfs = {ticker: group.set_index('Date').sort_index() for ticker, group in df_all.groupby('Ticker')}
     
     grand_results = {
         "①パーフェクトオーダー": {d: [] for d in EVAL_DAYS},
