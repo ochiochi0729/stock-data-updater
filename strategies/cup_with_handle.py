@@ -96,13 +96,20 @@ class CupWithHandleScreener:
         vol_1m_min = df['Volume'].rolling(window=20).min().iloc[-1]
         vol_1m_avg = df['Volume'].rolling(window=20).mean().iloc[-1]
         latest = df.iloc[-1]
-        sma200_20d_ago = df['SMA200'].shift(20).iloc[-1]
+        
+        # =========================================================
+        # ★ 修正箇所: SMA200をデータベースから呼ぶのではなく、その場で計算する
+        # =========================================================
+        sma200_series = df['Close'].rolling(window=200).mean()
+        latest_sma200 = sma200_series.iloc[-1]
+        sma200_20d_ago = sma200_series.shift(20).iloc[-1]
 
         if vol_1m_min < 100000:
             self.drop_reasons["02_基本流動性不足(1ヶ月最低10万株)"] += 1
             return
             
-        if latest['Close'] < latest['SMA200'] or latest['SMA200'] < sma200_20d_ago:
+        # ★ 修正箇所: 計算した latest_sma200 を使って判定（ロジック自体は不変）
+        if latest['Close'] < latest_sma200 or latest_sma200 < sma200_20d_ago:
             self.drop_reasons["03_事前の長期上昇トレンドがない(200日線未満または下向き)"] += 1
             return
 
