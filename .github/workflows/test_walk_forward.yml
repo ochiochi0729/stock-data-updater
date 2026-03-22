@@ -22,4 +22,6 @@ jobs:
           pip install pandas numpy yfinance pandas-gbq db-dtypes google-auth pyarrow google-cloud-bigquery-storage requests
 
       - name: ② シミュレーションの実行と結果表示
+        env: # ★ここを追加！GitHubの金庫から合鍵を取り出して渡す
+          GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
         run: python walk_forward_test.py
