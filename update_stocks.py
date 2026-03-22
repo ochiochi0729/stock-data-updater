@@ -111,7 +111,7 @@ def main():
                     all_dfs.append(df_t[cols])  # ★ ここで結合せず、ただ箱に放り込む
 
     download_data(update_tickers, "5d", "既存更新")
-    download_data(new_tickers, "1y", "新規追加")
+    download_data(new_tickers, "3y", "新規追加")
 
     # ★ 最後に1回だけ全データをガッチャンコする（一瞬で終わります）
     df_to_upload = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
