@@ -42,7 +42,6 @@ def get_credentials():
 def load_tickers_from_csv():
     if not os.path.exists(CSV_LIST_PATH): return []
     try:
-        # ★ 「1行目からすべてデータとして扱ってね」と指示する
         df = pd.read_csv(CSV_LIST_PATH, header=None)
         return [c.strip().upper() + '.T' if not c.strip().upper().endswith('.T') else c.strip().upper() for c in df.iloc[:, 0].astype(str) if c.strip()]
     except: return []
@@ -51,7 +50,7 @@ def load_tickers_from_csv():
 # メイン処理
 # ==========================================
 def main():
-    print(f"{'='*60}\n▼ 株価データベース更新レポート\n{'='*60}")
+    print(f"{'='*60}\n▼ 株価データベース更新レポート (SMA計算機能付き)\n{'='*60}")
     
     target_tickers = load_tickers_from_csv()
     if not target_tickers:
@@ -73,23 +72,24 @@ def main():
     update_tickers = [t for t in target_tickers if t in existing_tickers]
 
     print(f"\n[対象銘柄の振り分け結果]")
-    print(f" ├ 既存銘柄の差分更新 (5日分): {len(update_tickers)}件")
-    print(f" └ 新規銘柄の過去取得 (1年分): {len(new_tickers)}件\n")
+    print(f" ├ 既存銘柄の差分更新 (5日分切出): {len(update_tickers)}件")
+    print(f" └ 新規銘柄の過去取得 (3年分): {len(new_tickers)}件\n")
 
     failed_tickers = []
-    all_dfs = []  # ★ 爆速化の要：DataFrameをリストに貯める
+    all_dfs = []  
 
-    def download_data(tickers, period, desc):
+    def download_data(tickers, period, desc, slice_days=None):
         if not tickers: return
         
-        batch_size = 100  # ★ 500から100に減らして安全運転
+        batch_size = 100 
         for i in range(0, len(tickers), batch_size):
             batch = tickers[i:i+batch_size]
-            print(f"[{desc}] データ取得中... ({i+1}〜{min(i+batch_size, len(tickers))}件 / {len(tickers)}件)")
+            print(f"[{desc}] データ取得＆計算中... ({i+1}〜{min(i+batch_size, len(tickers))}件 / {len(tickers)}件)")
             
             yf.shared._ERRORS = {}
+            # auto_adjust=False で配当落ちのおせっかい自動調整をオフ
             data = yf.download(batch, period=period, group_by='ticker', threads=True, progress=False, auto_adjust=False)
-            time.sleep(1) # ★ Yahooに怒られないように1秒お休みする
+            time.sleep(1) 
             
             if yf.shared._ERRORS:
                 for t, err in yf.shared._ERRORS.items():
@@ -107,13 +107,26 @@ def main():
                 if not df_t.empty:
                     df_t = df_t.reset_index()
                     df_t['Ticker'] = t
-                    cols = [c for c in ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Ticker'] if c in df_t.columns]
-                    all_dfs.append(df_t[cols])  # ★ ここで結合せず、ただ箱に放り込む
+                    df_t = df_t.sort_values('Date')
+                    
+                    # ★ここでデータベース保存前に25日線と75日線を自力計算！
+                    df_t['SMA25'] = df_t['Close'].rolling(window=25).mean()
+                    df_t['SMA75'] = df_t['Close'].rolling(window=75).mean()
+                    
+                    # ★既存更新の場合は、計算が終わった後に「最新の5日分」だけ残して尻尾を切る
+                    if slice_days is not None:
+                        df_t = df_t.tail(slice_days)
+                    
+                    # SMA25とSMA75の列も保存対象に含める
+                    cols = [c for c in ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'SMA25', 'SMA75', 'Ticker'] if c in df_t.columns]
+                    all_dfs.append(df_t[cols])
 
-    download_data(update_tickers, "5d", "既存更新")
-    download_data(new_tickers, "3y", "新規追加")
+    # ★ 既存更新時は「半年分(6mo)」取得して計算し、DBには「5日分」だけ保存する
+    download_data(update_tickers, "6mo", "既存更新", slice_days=5)
+    
+    # ★ 新規追加時は「3年分(3y)」取得して全データ保存する
+    download_data(new_tickers, "3y", "新規追加", slice_days=None)
 
-    # ★ 最後に1回だけ全データをガッチャンコする（一瞬で終わります）
     df_to_upload = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
     if not df_to_upload.empty:
@@ -131,6 +144,7 @@ def main():
             print("✅ アップロード成功！")
         except Exception as e:
             print(f"❌ アップロード失敗: {e}")
+            print("【ヒント】BigQueryのテーブルの列構成が変わったためエラーになった可能性があります。BigQuery上でテーブルを一度削除して再実行してください。")
     else:
         print("\n⚠️ アップロードするデータがありませんでした。")
 
