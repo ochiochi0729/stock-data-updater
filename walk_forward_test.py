@@ -10,7 +10,7 @@ from strategies.cup_with_handle import CupWithHandleScreener
 # ★ 戦略の選択
 # ==========================================
 # "PO" = パーフェクトオーダー / "CWH" = カップウィズハンドル
-STRATEGY_TYPE = "PO" 
+STRATEGY_TYPE = "CWH" 
 
 STRATEGY_MAP = {
     "PO": {"class": PerfectOrderScreener, "name": "Perfect Order"},
