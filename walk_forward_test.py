@@ -34,20 +34,30 @@ def run_simulation():
     # テスト対象を絞る場合はここで調整（テストの高速化のため）
     # tickers = tickers[:200] 
 
-    print("1. 過去データの取得とインジケーター計算中... (数分かかります)")
-    # 25日線や75日線を計算するため、半年前(2024-06)からのデータを取得
-    data = yf.download(tickers, start="2024-06-01", end="2026-01-10", group_by='ticker', auto_adjust=False, progress=False)
+    print("1. 過去データの取得とインジケーター計算中... (Yahooから少しずつ取得します)")
+    import time
     
     dict_dfs = {}
-    for t in tickers:
-        try:
-            df = data[t].copy() if len(tickers) > 1 else data.copy()
-            df = df.dropna(how='all')
-            if df.empty: continue
-            # 指標の計算
-            df = IndicatorCalculator.add_indicators(df)
-            dict_dfs[t] = df
-        except: pass
+    batch_size = 100 # 100件ずつ小分けにする
+    for i in range(0, len(tickers), batch_size):
+        batch = tickers[i:i+batch_size]
+        print(f" データ取得中... ({i+1}〜{min(i+batch_size, len(tickers))}件 / {len(tickers)}件)")
+        
+        # Yahoo Financeのエラー表示を一時的に隠す
+        yf.shared._ERRORS = {}
+        data = yf.download(batch, start="2024-06-01", end="2026-01-10", group_by='ticker', auto_adjust=False, progress=False)
+        time.sleep(1) # ★Yahooに怒られないように1秒休む
+        
+        # 取得したデータを辞書（dict_dfs）に格納していく
+        for t in batch:
+            try:
+                df = data[t].copy() if len(batch) > 1 else data.copy()
+                df = df.dropna(how='all')
+                if df.empty: continue
+                # 指標の計算
+                df = IndicatorCalculator.add_indicators(df)
+                dict_dfs[t] = df
+            except: pass
 
     # 営業日カレンダーの作成（TOPIX ETFの営業日を基準にする）
     if BENCHMARK_TICKER not in dict_dfs:
