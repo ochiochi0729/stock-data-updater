@@ -1,13 +1,10 @@
 import sys
-import os
-import time
 import pandas as pd
 import numpy as np
-import yfinance as yf
 from datetime import datetime
-from contextlib import redirect_stdout, redirect_stderr
-from core import Logger, load_tickers_from_csv
-from strategies.indicators import IndicatorCalculator
+# ★ yfinance, os, time などの通信・待機用ライブラリを全削除！
+from core import Logger, load_tickers_from_csv, fetch_bigquery_data
+# ★ IndicatorCalculator も不要になったので削除！
 from strategies.perfect_order import PerfectOrderScreener
 
 sys.stdout = Logger("walk_forward_report.txt")
@@ -32,33 +29,18 @@ def run_simulation():
     tickers = load_tickers_from_csv()
     if BENCHMARK_TICKER not in tickers:
         tickers.append(BENCHMARK_TICKER)
+    valid_tickers = set(tickers)
 
     # ==========================================
-    # フェーズ1：データのダウンロード
+    # フェーズ1：データのダウンロード（BigQueryから一瞬で取得）
     # ==========================================
-    print("1. 過去データの取得とインジケーター計算中...")
-    print("   (Yahooの不要なエラーは非表示にしています。約1〜3分お待ちください)")
+    print("1. BigQueryから過去データを一括取得中... (数秒〜十数秒で終わります)")
     
-    dict_dfs = {}
-    batch_size = 100 
-    for i in range(0, len(tickers), batch_size):
-        batch = tickers[i:i+batch_size]
-        print(f" ▶ データダウンロード中... ({min(i+batch_size, len(tickers))}件 / {len(tickers)}件 完了)")
-        
-        with open(os.devnull, 'w') as devnull:
-            with redirect_stdout(devnull), redirect_stderr(devnull):
-                data = yf.download(batch, start="2024-06-01", end="2026-01-10", group_by='ticker', auto_adjust=False, progress=False)
-        
-        time.sleep(1) 
-        
-        for t in batch:
-            try:
-                df = data[t].copy() if len(batch) > 1 else data.copy()
-                df = df.dropna(how='all')
-                if df.empty: continue
-                df = IndicatorCalculator.add_indicators(df)
-                dict_dfs[t] = df
-            except: pass
+    # END_DATEを基準に、過去500日分のデータを一括取得（25日線・75日線も計算済み！）
+    df_all = fetch_bigquery_data(target_date=END_DATE, lookback_days=500, forward_days=0)
+    
+    # 対象銘柄だけに絞り込み、高速アクセス用の辞書を作成
+    dict_dfs = {ticker: group.set_index('Date').sort_index() for ticker, group in df_all.groupby('Ticker') if ticker in valid_tickers}
 
     if BENCHMARK_TICKER not in dict_dfs:
         print("エラー: ベンチマークデータが取得できませんでした。")
@@ -95,7 +77,12 @@ def run_simulation():
             if current_date not in df.index: continue
             
             today_data = df.loc[current_date]
+            
+            # BigQueryのSMA25を取得（万が一NaNの場合は自力計算でカバー）
             sma25 = today_data.get('SMA25')
+            if pd.isna(sma25):
+                sma25 = df.loc[:current_date, 'Close'].tail(25).mean()
+                
             t_open = today_data.get('Open')
             if pd.isna(sma25) or pd.isna(t_open): continue
                 
@@ -153,13 +140,16 @@ def run_simulation():
             prev_close = float(df.iloc[prev_idx].get('Close', np.nan))
             today_data = df.loc[current_date]
             
-            sma25 = float(today_data.get('SMA25', np.nan))
+            sma25 = today_data.get('SMA25')
+            if pd.isna(sma25):
+                sma25 = float(df.loc[:current_date, 'Close'].tail(25).mean())
+                
             t_open = float(today_data.get('Open', np.nan))
             t_high = float(today_data.get('High', np.nan))
             t_low = float(today_data.get('Low', np.nan))
             
             print(f"    🔍 [購入審査] {today_str} : {ticker}")
-            print(f"       前日終値:{prev_close}, 始値:{t_open}, 高値:{t_high}")
+            print(f"       前日終値:{prev_close:.1f}, 始値:{t_open:.1f}, 高値:{t_high:.1f}, 25日線:{sma25:.1f}")
 
             if pd.isna(sma25) or pd.isna(t_open) or pd.isna(prev_close): 
                 print("       => ❌ データ欠損のため見送り")
@@ -173,14 +163,14 @@ def run_simulation():
                 buy_price = prev_close
                 print(f"       => ⭕ 条件②クリア！ 前日終値({buy_price}円)で購入決定！")
             else:
-                print("       => ❌ 条件未達 (寄り付きも安く、日中も前日終値を超えなかった) のため見送り")
+                print("       => ❌ 条件未達 (寄り付き安く、日中も前日終値を超えず) のため見送り")
                 
             if buy_price is not None:
                 cost = buy_price * POSITION_LOT
                 if cash >= cost:
                     cash -= cost
                     positions[ticker] = {'entry_price': buy_price, 'shares': POSITION_LOT, 'entry_date': today_str}
-                    print(f"       💰 資金確保OK！ {ticker} を {POSITION_LOT}株 購入しました！(残金: {cash:,.0f}円)")
+                    print(f"       💰 資金確保OK！ {ticker} を {POSITION_LOT}株 購入！(残金: {cash:,.0f}円)")
                     
                     sl_price = sma25 * STOP_LOSS_PCT
                     if t_low <= sl_price:
@@ -188,17 +178,18 @@ def run_simulation():
                         profit = (sl_price - buy_price) * POSITION_LOT
                         trade_history.append({'ticker': ticker, 'entry_date': today_str, 'exit_date': today_str, 'entry_price': buy_price, 'exit_price': sl_price, 'profit': profit, 'reason': "損切り(即日)"})
                         del positions[ticker]
-                        print(f"       😭 しかし、買ったその日に急落し、即日損切り({sl_price}円)されました...")
+                        print(f"       😭 しかし、買ったその日に急落し、即日損切り({sl_price:.1f}円)されました...")
                 else:
-                    print(f"       💸 残念！資金不足のため購入できませんでした (必要:{cost}円, 残金:{cash}円)")
+                    print(f"       💸 残念！資金不足のため購入できませんでした (必要:{cost}円, 残金:{cash:,.0f}円)")
 
         # -------------------------------------------------
-        # 明日のためのスクリーニング（デバッグモード）
+        # 明日のためのスクリーニング
         # -------------------------------------------------
         candidates_for_tomorrow = []
-        for ticker, df in dict_dfs.items():
+        for ticker in dict_dfs.keys():
             if ticker == BENCHMARK_TICKER: continue
             
+            df = dict_dfs[ticker]
             sub_df = df.loc[:current_date]
             if len(sub_df) < 100: continue 
             
