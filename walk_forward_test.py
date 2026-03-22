@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from core import Logger, load_tickers_from_csv, fetch_bigquery_data
 from strategies.perfect_order import PerfectOrderScreener
 from strategies.cup_with_handle import CupWithHandleScreener
+from strategies.breakout import BreakoutScreener
 
 # ==========================================
 # ★ 戦略の選択
@@ -14,7 +15,8 @@ STRATEGY_TYPE = "CWH"
 
 STRATEGY_MAP = {
     "PO": {"class": PerfectOrderScreener, "name": "Perfect Order"},
-    "CWH": {"class": CupWithHandleScreener, "name": "Cup with Handle"}
+    "CWH": {"class": CupWithHandleScreener, "name": "Cup with Handle"},
+    "BO": {"class": BreakoutScreener, "name": "Breakout"}
 }
 
 sys.stdout = Logger("walk_forward_report.txt")
