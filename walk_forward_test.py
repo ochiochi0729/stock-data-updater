@@ -95,8 +95,6 @@ def run_simulation():
             if current_date not in df.index: continue
             
             today_data = df.loc[current_date]
-            
-            # ★バグ修正：SMA25が存在しない場合は安全にスキップ
             sma25 = today_data.get('SMA25')
             t_open = today_data.get('Open')
             if pd.isna(sma25) or pd.isna(t_open): continue
@@ -135,6 +133,11 @@ def run_simulation():
         for ticker in candidates_for_tomorrow:
             if ticker in positions: continue 
             df = dict_dfs[ticker]
+            
+            # ★追加修正：その日のデータが存在しない（売買停止・上場廃止）場合はスキップ
+            if current_date not in df.index:
+                continue
+                
             prev_idx = df.index.get_loc(current_date) - 1
             if prev_idx >= 0:
                 valid_candidates.append((ticker, df.iloc[prev_idx].get('Volume', 0)))
@@ -151,7 +154,6 @@ def run_simulation():
             prev_close = df.iloc[prev_idx].get('Close')
             today_data = df.loc[current_date]
             
-            # ★バグ修正：SMA25や株価が存在しない場合は安全にスキップ
             sma25 = today_data.get('SMA25')
             t_open = today_data.get('Open')
             if pd.isna(sma25) or pd.isna(t_open) or pd.isna(prev_close): continue
