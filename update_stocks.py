@@ -73,7 +73,7 @@ def main():
 
     print(f"\n[対象銘柄の振り分け結果]")
     print(f" ├ 既存銘柄の差分更新 (5日分切出): {len(update_tickers)}件")
-    print(f" └ 新規銘柄の過去取得 (3年分): {len(new_tickers)}件\n")
+    print(f" └ 新規銘柄の過去取得 (5年分): {len(new_tickers)}件\n")
 
     failed_tickers = []
     all_dfs = []  
@@ -124,8 +124,8 @@ def main():
     # ★ 既存更新時は「半年分(6mo)」取得して計算し、DBには「5日分」だけ保存する
     download_data(update_tickers, "6mo", "既存更新", slice_days=5)
     
-    # ★ 新規追加時は「3年分(3y)」取得して全データ保存する
-    download_data(new_tickers, "3y", "新規追加", slice_days=None)
+    # ★ 新規追加時は「5年分(5y)」取得して全データ保存する
+    download_data(new_tickers, "5y", "新規追加", slice_days=None)
 
     df_to_upload = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
