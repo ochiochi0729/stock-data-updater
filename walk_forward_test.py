@@ -181,16 +181,29 @@ def run_simulation():
                         del positions[ticker]
 
         # -------------------------------------------------
-        # 明日のためのスクリーニング
+        # 明日のためのスクリーニング（デバッグモード）
         # -------------------------------------------------
         candidates_for_tomorrow = []
         for ticker, df in dict_dfs.items():
             if ticker == BENCHMARK_TICKER: continue
+            
+            sub_df = df.loc[:current_date]
+            # 最低100日分のデータがない未熟な銘柄は計算不能なのでスキップ
+            if len(sub_df) < 100: continue 
+            
             try:
-                sub_df = df.loc[:current_date]
-                if len(sub_df) > 0 and screener.check_conditions(sub_df):
+                if screener.check_conditions(sub_df):
                     candidates_for_tomorrow.append(ticker)
-            except: pass
+                    # ★抽出に成功した場合は画面にお知らせする
+                    print(f"  🎯 {current_date.strftime('%Y-%m-%d')}: {ticker} を明日の購入候補として抽出！")
+                    
+            except Exception as e:
+                # ★エラーが起きた瞬間に大声で叫んで処理を止める！
+                print(f"\n🚨 スクリーニング内部で致命的なエラーが発生しました！")
+                print(f"  エラー発生日: {current_date.strftime('%Y-%m-%d')}")
+                print(f"  エラー銘柄: {ticker}")
+                print(f"  エラー詳細: {e}")
+                sys.exit(1) # 強制終了
 
         # -------------------------------------------------
         # 資産の記録
