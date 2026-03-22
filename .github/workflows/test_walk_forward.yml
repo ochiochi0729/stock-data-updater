@@ -25,3 +25,11 @@ jobs:
         env: # ★ここを追加！GitHubの金庫から合鍵を取り出して渡す
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
         run: python walk_forward_test.py
+
+    　- name: ③ グラフ画像を保存する
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-results
+          path: |
+            equity_curve.png
+            walk_forward_report.txt
