@@ -5,77 +5,76 @@ from google.oauth2 import service_account
 import plotly.graph_objects as go
 
 # --- 1. ページの設定 ---
-st.set_page_config(page_title="株価ダッシュボード", layout="wide")
+st.set_page_config(page_title="株価分析アプリ", layout="wide")
 
-# --- 2. BigQueryの認証設定（クラウドSecrets用） ---
-# Streamlitの「Advanced settings」>「Secrets」に保存した情報を読み込みます
+# --- 2. 認証設定 ---
 if "gcp_service_account" in st.secrets:
     creds_info = st.secrets["gcp_service_account"]
     credentials = service_account.Credentials.from_service_account_info(creds_info)
+    client = bigquery.Client(credentials=credentials, project=creds_info['project_id'])
 else:
-    st.error("Secretsが設定されていません。Streamlitの管理画面から鍵を登録してください。")
+    st.error("Secretsが設定されていません。")
     st.stop()
 
-# --- 3. データの取得 ---
+# --- 3. 銘柄リストだけを先に取得する関数 ---
 @st.cache_data
-def load_data():
-    # 認証情報(credentials)を使ってクライアントを作成
-    client = bigquery.Client(credentials=credentials, project=creds_info['project_id'])
-    
-    query = """
+def get_ticker_list():
+    # 銘柄コード（Ticker）の重複を除いたリストだけを取得（これは軽い）
+    query = "SELECT DISTINCT Ticker FROM `stock-data-updater-490714.stock_db.daily_prices` ORDER BY Ticker"
+    return client.query(query).to_dataframe()['Ticker'].tolist()
+
+# --- 4. 選択された銘柄のデータだけを取得する関数 ---
+@st.cache_data
+def load_data_by_ticker(ticker):
+    # 特定の銘柄（WHERE句）で絞り込んで取得
+    query = f"""
         SELECT 
             Date, Ticker, Open, Close, High, Low, Volume, SMA25, SMA75, SMA200
         FROM `stock-data-updater-490714.stock_db.daily_prices`
+        WHERE Ticker = '{ticker}'
         ORDER BY Date
     """
     df = client.query(query).to_dataframe()
     df['Date'] = pd.to_datetime(df['Date'])
     return df
 
-# データの読み込み
-try:
-    df = load_data()
-except Exception as e:
-    st.error(f"データの読み込み中にエラーが発生しました: {e}")
-    st.stop()
-
+# --- 5. メイン処理 ---
 st.title("📊 株価分析ダッシュボード")
 
-# --- 4. 画面のUI（サイドバー） ---
-st.sidebar.header("検索条件")
-tickers = df['Ticker'].unique()
-selected_ticker = st.sidebar.selectbox("銘柄を選択", tickers)
+# サイドバーで銘柄を選択
+ticker_list = get_ticker_list()
+selected_ticker = st.sidebar.selectbox("銘柄を選択してください", ticker_list)
 
-filtered_df = df[df['Ticker'] == selected_ticker]
+if selected_ticker:
+    # 選択された銘柄のデータだけをダウンロード
+    with st.spinner(f'{selected_ticker} のデータを読み込み中...'):
+        df = load_data_by_ticker(selected_ticker)
 
-if not filtered_df.empty:
-    min_date = filtered_df['Date'].min().date()
-    max_date = filtered_df['Date'].max().date()
+    if not df.empty:
+        # 日付範囲の選択
+        min_date = df['Date'].min().date()
+        max_date = df['Date'].max().date()
+        start_date, end_date = st.sidebar.slider("期間", min_date, max_date, (min_date, max_date))
 
-    start_date, end_date = st.sidebar.slider(
-        "期間を選択",
-        min_value=min_date,
-        max_value=max_date,
-        value=(min_date, max_date)
-    )
+        # データのフィルタリング
+        final_df = df[(df['Date'].dt.date >= start_date) & (df['Date'].dt.date <= end_date)]
 
-    mask = (filtered_df['Date'].dt.date >= start_date) & (filtered_df['Date'].dt.date <= end_date)
-    final_df = filtered_df.loc[mask].sort_values('Date')
+        # チャート作成
+        fig = go.Figure()
+        fig.add_trace(go.Candlestick(
+            x=final_df['Date'], open=final_df['Open'], high=final_df['High'],
+            low=final_df['Low'], close=final_df['Close'], name='ローソク足'
+        ))
+        # 移動平均線
+        for sma, color in zip(['SMA25', 'SMA75', 'SMA200'], ['orange', 'green', 'blue']):
+            fig.add_trace(go.Scatter(x=final_df['Date'], y=final_df[sma], name=sma, line=dict(color=color, width=1.5)))
 
-    # --- 5. チャート描画 ---
-    fig = go.Figure()
-    fig.add_trace(go.Candlestick(
-        x=final_df['Date'], open=final_df['Open'], high=final_df['High'],
-        low=final_df['Low'], close=final_df['Close'], name='ローソク足'
-    ))
-    fig.add_trace(go.Scatter(x=final_df['Date'], y=final_df['SMA25'], mode='lines', name='25日線', line=dict(color='orange')))
-    fig.add_trace(go.Scatter(x=final_df['Date'], y=final_df['SMA75'], mode='lines', name='75日線', line=dict(color='green')))
-    fig.add_trace(go.Scatter(x=final_df['Date'], y=final_df['SMA200'], mode='lines', name='200日線', line=dict(color='blue')))
+        fig.update_layout(height=600, xaxis_rangeslider_visible=False, template="plotly_white")
+        st.plotly_chart(fig, use_container_width=True)
 
-    fig.update_layout(height=600, template="plotly_white", xaxis_rangeslider_visible=False)
-    st.plotly_chart(fig, use_container_width=True)
-
-    # 出来高
-    vol_fig = go.Figure(go.Bar(x=final_df['Date'], y=final_df['Volume'], marker_color='lightgrey'))
-    vol_fig.update_layout(height=200, margin=dict(t=0))
-    st.plotly_chart(vol_fig, use_container_width=True)
+        # 出来高
+        vol_fig = go.Figure(go.Bar(x=final_df['Date'], y=final_df['Volume'], marker_color='silver'))
+        vol_fig.update_layout(height=200, margin=dict(t=0))
+        st.plotly_chart(vol_fig, use_container_width=True)
+    else:
+        st.warning("データが存在しません。")
