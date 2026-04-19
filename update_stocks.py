@@ -8,7 +8,7 @@ import time
 from google.oauth2 import service_account
 
 # ==========================================
-# 設定部分 (ご提示の以前の設定を継承)
+# 設定部分
 # ==========================================
 PROJECT_ID = 'stock-data-updater-490714'
 DATASET_ID = 'stock_db'
@@ -32,10 +32,9 @@ class Logger:
 sys.stdout = Logger("update_report.txt")
 
 # ==========================================
-# ヘルパー関数[cite: 4]
+# ヘルパー関数
 # ==========================================
 def get_credentials():
-    # GitHub ActionsのSecretsに設定された環境変数から認証情報を取得[cite: 4]
     creds_json = os.environ.get('GCP_CREDENTIALS')
     if not creds_json: raise ValueError("GCPの認証情報(GCP_CREDENTIALS)が見つかりません。")
     return service_account.Credentials.from_service_account_info(json.loads(creds_json))
@@ -44,9 +43,25 @@ def load_tickers_from_csv():
     if not os.path.exists(CSV_LIST_PATH): return []
     try:
         df = pd.read_csv(CSV_LIST_PATH, header=None)
-        # 銘柄コードを .T 形式に正規化[cite: 4]
         return [c.strip().upper() + '.T' if not c.strip().upper().endswith('.T') else c.strip().upper() for c in df.iloc[:, 0].astype(str) if c.strip()]
     except: return []
+
+# ★ 追加ポイント①：CSVから「銘柄コードと銘柄名の辞書（マップ）」を作る関数
+def get_brand_map():
+    if not os.path.exists(CSV_LIST_PATH): return {}
+    try:
+        df = pd.read_csv(CSV_LIST_PATH, header=None)
+        df[0] = df[0].astype(str).str.strip().str.upper()
+        df[0] = df[0].apply(lambda x: x + '.T' if not x.endswith('.T') else x)
+        
+        # B列(列番号1)が存在する場合のみ辞書化。空欄ならコードを名前にする
+        if df.shape[1] > 1:
+            df[1] = df[1].fillna(df[0]).astype(str)
+            return dict(zip(df[0], df[1]))
+        else:
+            return dict(zip(df[0], df[0]))
+    except:
+        return {}
 
 # ==========================================
 # メイン処理
@@ -59,13 +74,16 @@ def main():
         print("エラー: 銘柄リストが見つかりません。")
         return
 
-    # 認証情報の取得[cite: 4]
+    # ★ 追加ポイント②：作成した関数を使って、銘柄名辞書を読み込む
+    brand_map = get_brand_map()
+
     creds = get_credentials()
     
-    # ベンチマーク(TOPIX)を追加
     BENCHMARK_TICKER = "1306.T"
     if BENCHMARK_TICKER not in target_tickers:
         target_tickers.append(BENCHMARK_TICKER)
+        # ベンチマークの名前も登録しておく
+        brand_map[BENCHMARK_TICKER] = "TOPIX連動ETF"
 
     print(f"対象銘柄数: {len(target_tickers)}件")
     print(f"取得モード: 過去5年分を全件取得してBigQueryを上書き(replace)\n")
@@ -73,10 +91,8 @@ def main():
     failed_tickers = []
     all_dfs = []  
 
-    # 1銘柄ずつ確実に取得（個別取得の方がエラー時のリトライやSMA計算が確実です）
     for i, ticker in enumerate(target_tickers):
         try:
-            # yfinanceのhistory(period="5y")はデフォルトで株式分割・配当調整済みを返します
             data = yf.Ticker(ticker).history(period="5y")
             
             if data.empty:
@@ -86,20 +102,20 @@ def main():
             df_t = data.reset_index()
             df_t['Ticker'] = ticker
             
-            # 各戦略で使用する移動平均線(SMA)を事前計算
-            # これによりスクリーナー側の KeyError: 'SMA200' を防止します
+            # ★ 追加ポイント③：取得した株価データに BrandName 列を追加する
+            # （辞書に見つからなければ、とりあえず銘柄コードを入れておく安全設計）
+            df_t['BrandName'] = brand_map.get(ticker, ticker)
+            
             df_t['SMA25'] = df_t['Close'].rolling(window=25).mean()
             df_t['SMA75'] = df_t['Close'].rolling(window=75).mean()
             df_t['SMA200'] = df_t['Close'].rolling(window=200).mean()
             
-            # BigQuery書き込み用に日付型を調整し、タイムゾーンを削除
             df_t['Date'] = pd.to_datetime(df_t['Date']).dt.tz_localize(None)
             
-            # 必要なカラムに絞り込み
-            cols = ['Date', 'Ticker', 'Open', 'High', 'Low', 'Close', 'Volume', 'SMA25', 'SMA75', 'SMA200']
+            # ★ 追加ポイント④：BigQueryに送る列のリストに 'BrandName' を加える
+            cols = ['Date', 'Ticker', 'BrandName', 'Open', 'High', 'Low', 'Close', 'Volume', 'SMA25', 'SMA75', 'SMA200']
             all_dfs.append(df_t[cols])
             
-            # アクセス制限回避のためのウェイト
             time.sleep(0.1)
             
             if (i + 1) % 100 == 0:
@@ -108,16 +124,12 @@ def main():
         except Exception as e:
             failed_tickers.append((ticker, str(e)))
 
-    # 全データの結合
     if all_dfs:
         df_to_upload = pd.concat(all_dfs, ignore_index=True)
-        # 全ての列を文字列に変換（BigQueryの互換性確保）
         df_to_upload.columns = df_to_upload.columns.astype(str)
         
         print(f"\nBigQueryへデータをアップロード中... (総件数: {len(df_to_upload):,}行)")
         try:
-            # if_exists='replace' を使うことで、古い分割前データを完全に消去し、
-            # 最新の「調整済みデータ」でデータベースを再構築します
             pandas_gbq.to_gbq(
                 df_to_upload,
                 f"{DATASET_ID}.{TABLE_ID}",
@@ -131,7 +143,6 @@ def main():
     else:
         print("\n⚠️ アップロードするデータがありませんでした。")
 
-    # 失敗レポート
     if failed_tickers:
         print(f"\n[取得失敗レポート: {len(failed_tickers)}件]")
         for t, reason in failed_tickers[:10]:
