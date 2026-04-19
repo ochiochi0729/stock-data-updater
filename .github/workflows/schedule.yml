@@ -1,9 +1,9 @@
-name: Daily Stock Data Update & Screening
+name: 1. Daily Stock Data Update
 
 on:
   schedule:
     - cron: '30 9 * * 2-6' # 日本時間の火〜土 18:30
-  workflow_dispatch:
+  workflow_dispatch: # 手動実行も可能
 
 jobs:
   run-update:
@@ -18,22 +18,17 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: ① 必要なライブラリをインストール
+      - name: 必要なライブラリをインストール
         run: |
           python -m pip install --upgrade pip
           pip install pandas yfinance pandas-gbq db-dtypes google-auth pyarrow google-cloud-bigquery-storage
 
-      - name: ② 株価データの更新（BigQueryへ）を実行
+      - name: 株価データの更新（BigQueryへ）を実行
         env:
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
         run: python -u update_stocks.py
 
-      - name: ③ 本日のスクリーニングを実行
-        env:
-          GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
-        run: python -u run_screener.py
-
-      - name: ④ レポートを合体させてメール本文を作る
+      - name: レポート本文を作る
         if: always()
         run: |
           echo "REPORT_CONTENT<<EOF" >> $GITHUB_ENV
@@ -42,15 +37,9 @@ jobs:
           else
             echo "データ更新のログがありません。" >> $GITHUB_ENV
           fi
-          echo "" >> $GITHUB_ENV
-          if [ -f report.txt ]; then
-            cat report.txt >> $GITHUB_ENV
-          else
-            echo "スクリーニング結果のログがありません。" >> $GITHUB_ENV
-          fi
           echo "EOF" >> $GITHUB_ENV
 
-      - name: ⑤ 抽出結果をGmailに送信
+      - name: 更新結果をGmailに送信
         uses: dawidd6/action-send-mail@v4
         if: always()
         with:
@@ -58,10 +47,10 @@ jobs:
           server_port: 465
           username: ${{ secrets.GMAIL_USERNAME }}
           password: ${{ secrets.GMAIL_PASSWORD }}
-          subject: 【本日の抽出結果】統合スクリーニング (${{ job.status }})
+          subject: 【DB更新完了】株価データ更新 (${{ job.status }})
           body: |
-            本日のシステム稼働レポートです。
-
+            本日の株価データ更新レポートです。
+            
             ${{ env.REPORT_CONTENT }}
-          to: ochiochi0729@gmail.com  # ★ご自身のメールアドレスに書き換えてください
+          to: ochiochi0729@gmail.com
           from: GitHub Actions Bot
