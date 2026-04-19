@@ -9,7 +9,6 @@ import json
 PROJECT_ID = 'stock-data-updater-490714'  # ★ご自身のプロジェクトIDに書き換えてください
 DATASET_TABLE = 'stock_db.daily_prices'  # ★ご自身のデータセットとテーブル名に書き換えてください
 SPREADSHEET_ID = '1Tc7PZo0DgsHmQd-pCydAQukY9rFxfI2qw5MzSGJK5bg'
-SHEET_NAME = 'シート１'
 
 def run_export():
     # 0. 認証情報（鍵）の読み込み
@@ -67,7 +66,7 @@ def run_export():
     gc = gspread.authorize(credentials)
     
     sh = gc.open_by_key(SPREADSHEET_ID)
-    worksheet = sh.worksheet(SHEET_NAME)
+    worksheet = sh.get_worksheet(0)
     
     # シートをクリアして新しいデータを書き込み
     worksheet.clear()
