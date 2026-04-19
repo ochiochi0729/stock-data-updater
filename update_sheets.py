@@ -51,6 +51,8 @@ def run_export():
         print("BigQueryからデータが取得できませんでした。")
         return
 
+    df = df.round(1)
+
     # 3. データのピボット変換 (縦持ち -> 横持ち)
     df_pivoted = df.pivot(index='Date', columns='Ticker')
     
