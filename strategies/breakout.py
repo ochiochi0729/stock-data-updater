@@ -31,7 +31,7 @@ class BreakoutScreener:
         c2 = v.rolling(20).min() >= 100000
 
         # 3. 75日線と25日線の関係
-        c3a = s75 >= s75.shift(30)
+        c3a = (s75 / s75.shift(30)) >= 0.97
         c3b = (s75 / s75.shift(10) - 1).abs() <= 0.015
         c3c = (s25 / s75 - 1).abs() <= 0.05
 
@@ -95,8 +95,8 @@ class BreakoutScreener:
             self.drop_reasons["2_基本流動性不足"] += 1
             return
             
-        if latest['SMA75'] < sma75_30d_ago:
-            self.drop_reasons["3a_75日線が過去に下降トレンドではない(上昇中など)"] += 1
+        if sma75_30d_ago == 0 or (latest['SMA75'] / sma75_30d_ago) < 0.97:
+            self.drop_reasons["3a_75日線の長期的な下落が止まっていない(-3%より急な下落)"] += 1
             return
             
         if sma75_10d_ago == 0 or abs((latest['SMA75'] / sma75_10d_ago) - 1) > 0.015:
