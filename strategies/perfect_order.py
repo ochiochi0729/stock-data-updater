@@ -11,7 +11,7 @@ class PerfectOrderScreener:
             "1_データ不足(100日)": 0, 
             "2_基本流動性不足(1ヶ月最低10万株)": 0,
             "3_パーフェクトオーダーの並びではない": 0, 
-            "4_移動平均線が上向きではない(トレンド弱)": 0,
+            "4_移動平均線の向きが悪い(25日線下向き、または75日線急落)": 0,
             "5a_数日前に十分な上昇(SMA25の+3%以上)がない": 0, 
             "5b_直近高値からの下落が大きすぎる(10%以上の暴落)": 0,
             "6_現在価格が25日線の押し目範囲外(0%〜2%)": 0, 
@@ -36,7 +36,7 @@ class PerfectOrderScreener:
         # 3. PO
         c3 = s25 > s75
         # 4. MA向き
-        c4 = (s25 > s25.shift(5)) & (s75 > s75.shift(5))
+        c4 = (s25 > s25.shift(5)) & ((s75 / s75.shift(5)) >= 0.99)
         
         # 5a & 5b. 直近高値 (15日前〜2日前 = 13日間)
         # shift(2).rolling(13) で、当日を含まない「2日前から15日前まで」をカバー
@@ -88,7 +88,7 @@ class PerfectOrderScreener:
 
         if vol_1m_min < 100000: self.drop_reasons["2_基本流動性不足(1ヶ月最低10万株)"] += 1
         elif latest['SMA25'] <= latest['SMA75']: self.drop_reasons["3_パーフェクトオーダーの並びではない"] += 1
-        elif (latest['SMA25'] <= sma25_5d_ago) or (latest['SMA75'] <= sma75_5d_ago): self.drop_reasons["4_移動平均線が上向きではない(トレンド弱)"] += 1
+        elif (latest['SMA25'] <= sma25_5d_ago) or ((latest['SMA75'] / sma75_5d_ago) < 0.99): self.drop_reasons["4_移動平均線の向きが悪い(25日線下向き、または75日線急落)"] += 1
         elif not (df['High'].iloc[-15:-2] > df['SMA25'].iloc[-15:-2] * 1.03).any(): self.drop_reasons["5a_数日前に十分な上昇(SMA25の+3%以上)がない"] += 1
         elif (latest['Low'] / df['High'].iloc[-15:-2].max()) < 0.90: self.drop_reasons["5b_直近高値からの下落が大きすぎる(10%以上の暴落)"] += 1
         elif not (0.0 <= (latest['Close'] / latest['SMA25']) - 1 <= 0.02): self.drop_reasons["6_現在価格が25日線の押し目範囲外(0%〜2%)"] += 1
