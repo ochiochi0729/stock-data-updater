@@ -23,7 +23,15 @@ def run_daily_logic(screener_class, strategy_name, target_tickers, dict_dfs):
             
             yfinance_url = f"https://finance.yahoo.co.jp/quote/{ticker}"
             
-            print(f"★ 抽出: {ticker:<6s} | 本日終値: {df.iloc[-1]['Close']:,.1f}円")
+            # ★ 修正箇所：BrandName（銘柄名）を取得して表示に加える
+            # 万が一データにBrandName列が存在しなくてもエラーにならない安全な書き方です
+            brand_name = df['BrandName'].iloc[-1] if 'BrandName' in df.columns else ""
+            
+            if brand_name:
+                print(f"★ 抽出: {ticker:<6s} | {brand_name} | 本日終値: {df.iloc[-1]['Close']:,.1f}円")
+            else:
+                print(f"★ 抽出: {ticker:<6s} | 本日終値: {df.iloc[-1]['Close']:,.1f}円")
+                
             print(f"   └ チャート確認: {yfinance_url}")
             
     print(f"\n抽出完了: {len(hit_tickers)}銘柄")
@@ -32,7 +40,6 @@ def run_daily_logic(screener_class, strategy_name, target_tickers, dict_dfs):
     for reason, count in sorted(screener.drop_reasons.items()):
         print(f"{reason}: {count} 銘柄")
         
-    # ★ 修正1: 抽出した銘柄リストを呼び出し元に返す
     return hit_tickers
 
 if __name__ == "__main__":
@@ -45,14 +52,12 @@ if __name__ == "__main__":
         
     print("\n本日のスクリーニングを開始します...\n")
     
-    # ★ 修正2: 各スクリーナーの戻り値（抽出銘柄リスト）を変数で受け取る
     hits_po = run_daily_logic(PerfectOrderScreener, "①パーフェクトオーダー押し目買い", target_tickers, dict_dfs)
     hits_cwh = run_daily_logic(CupWithHandleScreener, "②カップ・ウィズ・ハンドル", target_tickers, dict_dfs)
     hits_bo = run_daily_logic(BreakoutScreener, "③底練りからのブレイクアウト", target_tickers, dict_dfs)
     
     print("\nすべてのスクリーニングが完了しました。")
 
-    # ★ 修正3: 抽出された全銘柄をまとめて重複を排除し、CSVに書き出す
     all_hits = list(set(hits_po + hits_cwh + hits_bo)) # set() で重複排除
     
     if all_hits:
