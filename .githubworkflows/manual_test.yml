@@ -1,0 +1,58 @@
+name: Manual Backtest (過去検証テスト)
+
+# ★ workflow_dispatch のみを指定することで「完全手動実行専用」になります（勝手に定期実行されません）
+on:
+  workflow_dispatch:
+
+jobs:
+  run-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: リポジトリのコードを取得
+        uses: actions/checkout@v4
+
+      - name: Pythonをセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 必要なライブラリをインストール
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas yfinance pandas-gbq db-dtypes google-auth pyarrow google-cloud-bigquery-storage
+
+      - name: ★過去検証（テスト）プログラムを実行
+        env:
+          GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+        # ここで test_screener.py を呼び出します
+        run: python -u test_screener.py
+
+      - name: レポート（テキスト）をメールの本文に読み込む
+        if: always()
+        run: |
+          echo "REPORT_CONTENT<<EOF" >> $GITHUB_ENV
+          # test_screener.py が出力する test_report.txt を読み込む
+          if [ -f test_report.txt ]; then
+            cat test_report.txt >> $GITHUB_ENV
+          else
+            echo "エラーが発生したか、合致する銘柄がありませんでした。" >> $GITHUB_ENV
+          fi
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: テスト結果をGmailに送信
+        uses: dawidd6/action-send-mail@v4
+        if: always()
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.GMAIL_USERNAME }}
+          password: ${{ secrets.GMAIL_PASSWORD }}
+          subject: 【テスト検証】統合スクリーニング結果 (${{ job.status }})
+          body: |
+            指定された過去の日付でのバックテストが完了しました。
+
+            ▼ テスト結果 ▼
+            ${{ env.REPORT_CONTENT }}
+          to: ochiochi0729@gmail.com  # ★必ずご自身のメールアドレスに書き換えてください
+          from: GitHub Actions Bot
