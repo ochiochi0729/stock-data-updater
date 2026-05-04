@@ -2,7 +2,7 @@ name: 1. Daily Stock Data Update
 
 on:
   schedule:
-    - cron: '13 9 * * 1-5' # 日本時間の火〜土 18:30
+    #- cron: '13 9 * * 1-5' # 日本時間の火〜土 18:30
   workflow_dispatch: # 手動実行も可能
 
 jobs:
